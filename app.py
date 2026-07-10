@@ -26,7 +26,7 @@ def norm_sf(x, mu, sigma):
     except:
         return 0.5
 
-# --- LIVE NEWS FETCHER (OHNE API-KEY, NUTZT NATIVEN RSS-FEED) ---
+# --- LIVE NEWS FETCHER (FUSSBALL - DEUTSCH) ---
 def hole_live_news(team1, team2=None):
     try:
         suchbegriff = f"{team1} {team2}" if team2 else team1
@@ -39,10 +39,9 @@ def hole_live_news(team1, team2=None):
             
         root = ET.fromstring(xml_data)
         news_liste = []
-        for item in root.findall('.//item')[:4]:  # Top 4 Newsartikel
+        for item in root.findall('.//item')[:4]:
             titel = item.find('title').text
             link = item.find('link').text
-            # Säubere den Quellennamen am Ende des Titels (z.B. " - Kicker")
             if " - " in titel:
                 titel = titel.rsplit(" - ", 1)[0]
             news_liste.append({"titel": titel, "link": link})
@@ -50,8 +49,45 @@ def hole_live_news(team1, team2=None):
     except:
         return []
 
+# --- KI INJURY SCANNER (WNBA - ENGLISCH US) ---
+def scanne_wnba_injuries(team):
+    try:
+        # Sucht gezielt auf dem US-Markt nach Verletzungsberichten des Teams
+        encoded_query = urllib.parse.quote(f"{team} WNBA injury report")
+        url = f"https://news.google.com/rss/search?q={encoded_query}&hl=en&gl=US&ceid=US:en"
+        
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
+        with urllib.request.urlopen(req, timeout=4) as response:
+            xml_data = response.read()
+            
+        root = ET.fromstring(xml_data)
+        gefundene_meldungen = []
+        berechneter_malus = 0.0
+        
+        # US-Sportbegriffe für Ausfälle und Zweifel
+        harte_ausfaelle = ["out", "injury", "injured", "miss", "missing", "broken", "acl", "surgery", "sidelined"]
+        fragliche_ausfaelle = ["questionable", "doubtful", "game-time", "gtd", "status"]
+        
+        for item in root.findall('.//item')[:3]: # Checke die Top 3 aktuellen Meldungen
+            titel_orig = item.find('title').text
+            titel_lower = titel_orig.lower()
+            link = item.find('link').text
+            
+            if any(k in titel_lower for k in harte_ausfaelle):
+                berechneter_malus += 3.0
+                gefundene_meldungen.append({"titel": titel_orig, "link": link, "typ": "🔴 Bestätigter Ausfall / Verletzung"})
+            elif any(k in titel_lower for k in fragliche_ausfaelle):
+                berechneter_malus += 1.5
+                gefundene_meldungen.append({"titel": titel_orig, "link": link, "typ": "🟡 Fraglich / Einsatz unsicher"})
+                
+        # Schutz-Deckelung bei max 7 Punkten Abzug pro Team
+        berechneter_malus = min(berechneter_malus, 7.0)
+        return gefundene_meldungen, berechneter_malus
+    except:
+        return [], 0.0
+
 # --- STREAMLIT CONFIG ---
-st.set_page_config(page_title="L9 Bets v1", page_icon="📈", layout="centered")
+st.set_page_config(page_title="L9 Bets v4", page_icon="📈", layout="centered")
 
 # --- SPORTARTAUSWAHL ---
 sportart = st.sidebar.radio("Sportart wählen", ["⚽ Fußball (Minor Leagues)", "🏀 WNBA Basketball (CSV)"])
@@ -101,7 +137,7 @@ if sportart == "⚽ Fußball (Minor Leagues)":
                     'HT_HA': (home['HTHG'].mean() / avg_hthg) if avg_hthg > 0 else 1,
                     'HT_HD': (home['HTAG'].mean() / avg_htag) if avg_htag > 0 else 1,
                     'HT_AA': (away['HTAG'].mean() / avg_htag) if avg_htag > 0 else 1,
-                    'HT_AD': (away['HTHG'].mean() / avg_htag) if avg_htag > 0 else 1,
+                    'HT_AD': (away['HTHG'].mean() / avg_hthg) if avg_hthg > 0 else 1,
                 }
             liga_daten[liga] = {'avg_fthg': avg_fthg, 'avg_ftag': avg_ftag, 'avg_hthg': avg_hthg, 'avg_htag': avg_htag, 'team_stats': team_stats}
         return df_gesamt, liga_daten, alle_teams
@@ -157,7 +193,6 @@ if sportart == "⚽ Fußball (Minor Leagues)":
             c4.metric("Über 2.5 Tore", f"{over25*100:.1f}%")
             c5.metric("Beide treffen (BTTS)", f"{btts_yes*100:.1f}%")
             
-            # AUTOMATISCHE NEWS IM FOOTER ANZEIGEN
             st.write("---")
             st.write("📰 **Automatische Live-News für dieses Match:**")
             news = hole_live_news(home_team, away_team)
@@ -165,13 +200,13 @@ if sportart == "⚽ Fußball (Minor Leagues)":
                 for n in news:
                     st.markdown(f"- [{n['titel']}]({n['link']})")
             else:
-                st.caption("Keine brandaktuellen News im Feed gefunden. Teams scheinen ruhig zu stehen.")
+                st.caption("Keine brandaktuellen News im Feed gefunden.")
 
 # ==============================================================================
-# SÄULE 2: WNBA BASKETBALL (HYBRID-MODELL + MANUELLE VERLETZUNGS-ZENTRALE)
+# SÄULE 2: WNBA BASKETBALL (HYBRID-MODELL + AUTOMATISCHER INJURY SCANNER)
 # ==============================================================================
 else:
-    st.title("🏀 WNBA Buchmacher-Analyst (Hybrid-Version)")
+    st.title("🏀 WNBA Buchmacher-Analyst (KI-Injury Update)")
 
     @st.cache_data
     def lade_wnba_daten():
@@ -228,25 +263,37 @@ else:
         st.error("❌ Spalten-Konflikt in der WNBA-Datei.")
         st.stop()
 
-    if modell_typ == "BILANZ_MODELL":
-        st.info("ℹ️ Historischer Bilanz-Modus aktiv (Berechnung basiert auf Win-Loss-Daten deiner Tabelle).")
-    else:
-        st.success("🎯 Erweitertes Effizienz-Modell aktiv (Punkte- & Pace-Statistiken erkannt).")
-
     teams_list = sorted(wnba_df['Team'].tolist())
     col1, col2 = st.columns(2)
     with col1: wnba_home = st.selectbox("Heimteam (WNBA)", teams_list, index=0)
     with col2: wnba_away = st.selectbox("Auswärtsteam (WNBA)", teams_list, index=1 if len(teams_list) > 1 else 0)
 
-    # --- MANUELLE VERLETZUNGS-ZENTRALE FÜR WNBA ---
-    with st.expander("🚨 Verletzungen & Statmuse-Einflüsse (Optional einrechnen)", expanded=False):
-        st.write("Trage hier Ausfälle ein, um die errechnete Linie künstlich anzupassen:")
+    # --- AUTOMATISCHER SCAN-PROZESS IM HINTERGRUND ---
+    news_home, auto_malus_home = scanne_wnba_injuries(wnba_home)
+    news_away, auto_malus_away = scanne_wnba_injuries(wnba_away)
+
+    # --- INTERAKTIVES VERLETZUNGS-MENÜ MIT KI-VORSCHLAG ---
+    with st.expander("🚨 KI-Verletzungs-Scanner & News (Live US-Märkte)", expanded=True):
+        st.write("Die KI scannt US-Quellen automatisch nach verletzten Spielerinnen und schlägt Anpassungen vor:")
         
-        malus_home = st.number_input(f"Punkte-Abzug für Heimteam ({wnba_home}) – z.B. 4.5", value=0.0, step=0.5)
-        malus_away = st.number_input(f"Punkte-Abzug für Auswärtsteam ({wnba_away})", value=0.0, step=0.5)
-        
-        st.text_area("Persönliche Statmuse Notizen (Wird nicht mitberechnet, dient nur als Merkzettel):", 
-                     placeholder="z.B. Breanna Stewart fraglich wegen Knie...")
+        c_h, c_a = st.columns(2)
+        with c_h:
+            st.markdown(f"**Anpassung {wnba_home}:**")
+            malus_home = st.number_input(f"Punkte-Abzug Heim", value=auto_malus_home, step=0.5, key="mh")
+            if news_home:
+                for n in news_home:
+                    st.caption(f"{n['typ']}: [{n['titel'][:40]}...]({n['link']})")
+            else:
+                st.caption("✅ Keine akuten Ausfälle in US-News gefunden.")
+                
+        with c_a:
+            st.markdown(f"**Anpassung {wnba_away}:**")
+            malus_away = st.number_input(f"Punkte-Abzug Auswärts", value=auto_malus_away, step=0.5, key="ma")
+            if news_away:
+                for n in news_away:
+                    st.caption(f"{n['typ']}: [{n['titel'][:40]}...]({n['link']})")
+            else:
+                st.caption("✅ Keine akuten Ausfälle in US-News gefunden.")
 
     st.write("---")
     st.write("#### Deine Tipico Buchmacher-Lines eintragen:")
@@ -281,7 +328,7 @@ else:
             exp_pts_home = (total_exp / 2) + (diff_exp / 2)
             exp_pts_away = (total_exp / 2) - (diff_exp / 2)
 
-        # HIER WERDEN DIE MANUELLEN VERLETZUNGS-MALUS-WERTE DIREKT ABGEZOGEN
+        # Abzug der (automatisch eingetragenen oder manuell überschriebenen) Ausfallpunkte
         exp_pts_home -= malus_home
         exp_pts_away -= malus_away
 
@@ -297,7 +344,7 @@ else:
         st.divider()
         st.subheader("🎯 Value-Prognose für deine Wetten")
         if malus_home > 0 or malus_away > 0:
-            st.warning(f"⚠️ Ergebnisse angepasst durch deine eingetragenen Verletzungs-Abzüge! (-{malus_home} / -{malus_away})")
+            st.warning(f"⚠️ Ergebnisse angepasst durch berechnete Ausfälle! (-{malus_home} Pkt. / -{malus_away} Pkt.)")
             
         st.caption(f"Erwarteter Endstand: **{exp_pts_home:.1f} : {exp_pts_away:.1f}** (Gesamtpunkte: {total_exp:.1f})")
         
