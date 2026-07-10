@@ -10,6 +10,17 @@ import xml.etree.ElementTree as ET
 
 warnings.filterwarnings('ignore')
 
+# --- HILFSFUNKTION: HANDICAP STRING PARSER ---
+def parse_handicap(hc_str):
+    """Zerlegt Formate wie '0:1', '1:0' oder '0:-1.5' in (Heim_Bonus, Auswaerts_Bonus)"""
+    try:
+        parts = hc_str.split(":")
+        if len(parts) == 2:
+            return float(parts[0].strip()), float(parts[1].strip())
+    except:
+        pass
+    return 0.0, 0.0
+
 # --- EIGENE MATHEMATISCHE FUNKTIONEN ---
 def poisson_pmf(k, lamb):
     if lamb <= 0: return 0
@@ -84,31 +95,28 @@ def scanne_wnba_injuries(team):
         return [], 0.0
 
 # --- STREAMLIT CONFIG ---
-st.set_page_config(page_title="L9 Bets v5", page_icon="📈", layout="centered")
+st.set_page_config(page_title="L9 Bets", page_icon="📈", layout="centered")
 
 # --- SPORTARTAUSWAHL ---
 sportart = st.sidebar.radio("Sportart wählen", ["⚽ Fußball (Minor Leagues)", "🏀 WNBA Basketball (CSV)"])
 
 # ==============================================================================
-# SÄULE 1: FUSSBALL (INTELLIGENTER MULTI-LEAGUE LOADER)
+# SÄULE 1: FUSSBALL (VOLLZEIT, HALBZEIT, DOPPELTE CHANCE, HANDICAP)
 # ==============================================================================
 if sportart == "⚽ Fußball (Minor Leagues)":
-    st.title("⚽ Tipico Fußball-Analyst (All Leagues Edition)")
+    st.title("⚽ Tipico Fußball-Analyst Pro")
 
     @st.cache_data
     def lade_fussball_daten():
-        # Alle CSV-Dateien im Ordner holen außer WNBA
         csv_dateien = [f for f in glob.glob('*.csv') if f != 'wnba_stats.csv']
         if not csv_dateien: return None, None, None
         
         daten_liste = []
         for datei in csv_dateien:
             try:
-                # Erkennt automatisch Komma/Semikolon-Trennung
                 df_temp = pd.read_csv(datei, sep=None, engine='python', encoding='utf-8')
                 df_temp.columns = [str(c).strip().upper() for c in df_temp.columns]
                 
-                # Dynamisches Spalten-Mapping für maximale Kompatibilität mit Extra-Leagues
                 div_col = next((c for c in df_temp.columns if c in ['DIV', 'LEAGUE', 'LIGA', 'COUNTRY']), None)
                 home_col = next((c for c in df_temp.columns if c in ['HOMETEAM', 'HOME', 'HEIM']), None)
                 away_col = next((c for c in df_temp.columns if c in ['AWAYTEAM', 'AWAY', 'AUSWAERTS']), None)
@@ -117,12 +125,9 @@ if sportart == "⚽ Fußball (Minor Leagues)":
                 hthg_col = next((c for c in df_temp.columns if c in ['HTHG', 'HT_HG']), None)
                 htag_col = next((c for c in df_temp.columns if c in ['HTAG', 'HT_AG']), None)
                 
-                if not all([home_col, away_col, fthg_col, ftag_col]):
-                    continue # Datei überspringen, wenn Basisdaten fehlen
+                if not all([home_col, away_col, fthg_col, ftag_col]): continue
                     
                 clean_df = pd.DataFrame()
-                
-                # Liga-Name bestimmen (Fallback auf Dateiname, z.B. DNK, SWE, NOR)
                 if div_col:
                     clean_df['Div'] = df_temp[div_col].astype(str).str.strip()
                 else:
@@ -133,11 +138,10 @@ if sportart == "⚽ Fußball (Minor Leagues)":
                 clean_df['FTHG'] = pd.to_numeric(df_temp[fthg_col], errors='coerce')
                 clean_df['FTAG'] = pd.to_numeric(df_temp[ftag_col], errors='coerce')
                 
-                # Intelligenter Fallback für fehlende Halbzeitdaten (z.B. in DNK.csv, SWE.csv)
                 if hthg_col:
                     clean_df['HTHG'] = pd.to_numeric(df_temp[hthg_col], errors='coerce')
                 else:
-                    clean_df['HTHG'] = (clean_df['FTHG'] * 0.42).round() # Schätzung: ca. 42% der Tore fallen in H1
+                    clean_df['HTHG'] = (clean_df['FTHG'] * 0.42).round()
                     
                 if htag_col:
                     clean_df['HTAG'] = pd.to_numeric(df_temp[htag_col], errors='coerce')
@@ -145,8 +149,7 @@ if sportart == "⚽ Fußball (Minor Leagues)":
                     clean_df['HTAG'] = (clean_df['FTAG'] * 0.42).round()
                     
                 daten_liste.append(clean_df.dropna())
-            except:
-                pass
+            except: pass
             
         if not daten_liste: return None, None, None
         df_gesamt = pd.concat(daten_liste, ignore_index=True)
@@ -179,21 +182,22 @@ if sportart == "⚽ Fußball (Minor Leagues)":
 
     df_gesamt, liga_daten, alle_teams = lade_fussball_daten()
     if df_gesamt is None:
-        st.error("❌ Keine auswertbaren Fußball-CSV-Dateien gefunden!")
+        st.error("❌ Keine Fußball-CSVs gefunden!")
         st.stop()
 
-    # Übersicht geladener Ligen anzeigen
-    ligen_liste = list(liga_daten.keys())
-    st.caption(f"Loaded Leagues: {', '.join(ligen_liste)}")
+    st.caption(f"Aktive Ligen: {', '.join(list(liga_daten.keys()))}")
 
     col1, col2 = st.columns(2)
     with col1: home_team = st.selectbox("Heimteam", alle_teams)
     with col2: away_team = st.selectbox("Auswärtsteam", alle_teams)
 
-    if st.button("🚀 Fußball Prognose berechnen", use_container_width=True):
+    # --- HANDICAP INPUT FÜR FUSSBALL ---
+    fb_hc_str = st.text_input("Fußball Handicap-Format (z.B. 0:1, 1:0, 0:-1.5)", value="0:1")
+
+    if st.button("🚀 Fußball Komplettprognose", use_container_width=True):
         aktuelle_liga = next((l for l, d in liga_daten.items() if home_team in d['team_stats'] and away_team in d['team_stats']), None)
         if not aktuelle_liga:
-            st.error("❌ Teams spielen nicht in derselben Liga oder Daten fehlen.")
+            st.error("❌ Teams spielen nicht in derselben Liga.")
         else:
             liga = liga_daten[aktuelle_liga]
             s = liga['team_stats']
@@ -205,59 +209,107 @@ if sportart == "⚽ Fußball (Minor Leagues)":
             
             sh_home_xg, sh_away_xg = max(0.01, ft_home_xg - ht_home_xg), max(0.01, ft_away_xg - ht_away_xg)
             
-            home_win, draw, away_win, over25, btts_yes = 0, 0, 0, 0, 0
-            for i in range(6):
+            # Counter Variablen initialisieren
+            home_win, draw, away_win = 0, 0, 0
+            ht_home_win, ht_draw, ht_away_win = 0, 0, 0
+            hc_home_win, hc_draw, hc_away_win = 0, 0, 0
+            over25, btts_yes = 0, 0
+            
+            hc_home_bonus, hc_away_bonus = parse_handicap(fb_hc_str)
+            
+            for i in range(6): # HT Heim
                 p_ht_h = poisson_pmf(i, ht_home_xg)
-                for j in range(6):
+                for j in range(6): # HT Auswärts
                     p_ht = p_ht_h * poisson_pmf(j, ht_away_xg)
-                    for k in range(6):
+                    
+                    # Halbzeit Ergebnisse addieren
+                    if i > j: ht_home_win += p_ht
+                    elif i == j: ht_draw += p_ht
+                    else: ht_away_win += p_ht
+                    
+                    for k in range(6): # SH Heim
                         p_sh_h = poisson_pmf(k, sh_home_xg)
-                        for l in range(6):
+                        for l in range(6): # SH Auswärts
                             p_full = p_ht * p_sh_h * poisson_pmf(l, sh_away_xg)
-                            f_h, f_a = i + k, j + l
+                            
+                            f_h, f_a = i + k, j + l # Endstand
+                            
+                            # Reguläre Vollzeit
                             if f_h > f_a: home_win += p_full
                             elif f_h == f_a: draw += p_full
                             else: away_win += p_full
+                            
+                            # Handicap Vollzeit-Berechnung
+                            v_h = f_h + hc_home_bonus
+                            v_a = f_a + hc_away_bonus
+                            if abs(v_h - v_a) < 1e-5: hc_draw += p_full
+                            elif v_h > v_a: hc_home_win += p_full
+                            else: hc_away_win += p_full
+                            
                             if (f_h + f_a) > 2.5: over25 += p_full
                             if f_h > 0 and f_a > 0: btts_yes += p_full
 
             st.divider()
-            st.subheader(f"📊 Ergebnis-Wahrscheinlichkeiten ({aktuelle_liga})")
+            
+            # 1. Vollzeit 3-Way & Doppelte Chance
+            st.subheader(f"📊 Vollzeit-Prognose ({aktuelle_liga})")
             c1, c2, c3 = st.columns(3)
             c1.metric("Sieg 1", f"{home_win*100:.1f}%")
             c2.metric("Remis X", f"{draw*100:.1f}%")
             c3.metric("Sieg 2", f"{away_win*100:.1f}%")
             
+            st.markdown("**Doppelte Chance:**")
+            dc1, dc2, dc3 = st.columns(3)
+            dc1.metric("1X (Heim oder Remis)", f"{(home_win + draw)*100:.1f}%")
+            dc2.metric("12 (Kein Remis)", f"{(home_win + away_win)*100:.1f}%")
+            dc3.metric("X2 (Remis oder Auswärts)", f"{(draw + away_win)*100:.1f}%")
+            
+            # 2. Halbzeit-Prognosen
+            st.write("---")
+            st.subheader("⏱️ Halbzeit-Prognose (1. Halbzeit)")
+            hc1, hc2, hc3 = st.columns(3)
+            hc1.metric("HT Sieg 1", f"{ht_home_win*100:.1f}%")
+            hc2.metric("HT Remis X", f"{ht_draw*100:.1f}%")
+            hc3.metric("HT Sieg 2", f"{ht_away_win*100:.1f}%")
+            
+            # 3. Dynamisches Format Handicap
+            st.write("---")
+            st.subheader(f"🎯 Handicap-Prognose (Format: {fb_hc_str})")
+            hcc1, hcc2, hcc3 = st.columns(3)
+            hcc1.metric("HC Sieg 1", f"{hc_home_win*100:.1f}%")
+            if hc_draw > 0.005: # Nur anzeigen, wenn es kein asiatisches halbes Handicap ist
+                hcc2.metric("HC Remis X", f"{hc_draw*100:.1f}%")
+            else:
+                hcc2.metric("HC Remis X", "0.0% (2-Way)")
+            hcc3.metric("HC Sieg 2", f"{hc_away_win*100:.1f}%")
+
+            # Tore Märkte
+            st.write("---")
             c4, c5 = st.columns(2)
             c4.metric("Über 2.5 Tore", f"{over25*100:.1f}%")
             c5.metric("Beide treffen (BTTS)", f"{btts_yes*100:.1f}%")
             
             st.write("---")
-            st.write("📰 **Automatische Live-News für dieses Match:**")
+            st.write("📰 **Live-News für dieses Match:**")
             news = hole_live_news(home_team, away_team)
             if news:
-                for n in news:
-                    st.markdown(f"- [{n['titel']}]({n['link']})")
-            else:
-                st.caption("Keine brandaktuellen News im Feed gefunden.")
+                for n in news: st.markdown(f"- [{n['titel']}]({n['link']})")
+            else: st.caption("Keine News im Feed.")
 
 # ==============================================================================
-# SÄULE 2: WNBA BASKETBALL (HYBRID-MODELL + AUTOMATISCHER INJURY SCANNER)
+# SÄULE 2: WNBA BASKETBALL (INTELLIGENTES NEUES HANDICAP FORMAT)
 # ==============================================================================
 else:
     st.title("🏀 WNBA Buchmacher-Analyst (KI-Injury Update)")
 
     @st.cache_data
     def lade_wnba_daten():
-        if not os.path.exists('wnba_stats.csv'):
-            return "FEHLT", None
+        if not os.path.exists('wnba_stats.csv'): return "FEHLT", None
         try:
             df = pd.read_csv('wnba_stats.csv', sep=None, engine='python', encoding='utf-8')
             df.columns = [str(c).strip().upper() for c in df.columns]
-            
             team_col = next((c for c in df.columns if c in ['TEAM', 'TEAM_NAME', 'NAME', 'MANNSCHAFT']), None)
-            if not team_col:
-                return "SPALTEN_FEHLER", None
+            if not team_col: return "SPALTEN_FEHLER", None
                 
             clean_df = pd.DataFrame()
             clean_df['Team'] = df[team_col].astype(str).str.strip()
@@ -273,33 +325,16 @@ else:
                 return "EFFIZIENZ_MODELL", clean_df.dropna()
                 
             wl_col = next((c for c in df.columns if c in ['W/L%', 'WIN%', 'PCT', 'WL%']), None)
-            w_col = next((c for c in df.columns if c in ['W', 'WINS', 'SIEGE']), None)
-            g_col = next((c for c in df.columns if c in ['G', 'GAMES', 'SPIELE']), None)
-            
             if wl_col:
                 clean_df['WIN_PCT'] = pd.to_numeric(df[wl_col], errors='coerce')
                 if clean_df['WIN_PCT'].max() > 1.0: clean_df['WIN_PCT'] /= 100.0
                 return "BILANZ_MODELL", clean_df.dropna()
-            elif w_col and g_col:
-                w = pd.to_numeric(df[w_col], errors='coerce').fillna(0)
-                g = pd.to_numeric(df[g_col], errors='coerce').fillna(1)
-                clean_df['WIN_PCT'] = w / g.replace(0, 1)
-                return "BILANZ_MODELL", clean_df.dropna()
-                
             return "SPALTEN_FEHLER", None
-        except Exception as e:
-            return f"ERROR: {str(e)}", None
+        except: return "ERROR", None
 
     modell_typ, wnba_df = lade_wnba_daten()
-
-    if "ERROR" in str(modell_typ):
-        st.error(f"❌ Fehler beim Laden: {modell_typ}")
-        st.stop()
-    elif modell_typ == "FEHLT":
-        st.error("❌ `wnba_stats.csv` wurde nicht im Hauptordner gefunden.")
-        st.stop()
-    elif modell_typ == "SPALTEN_FEHLER":
-        st.error("❌ Spalten-Konflikt in der WNBA-Datei.")
+    if "ERROR" in str(modell_typ) or modell_typ in ["FEHLT", "SPALTEN_FEHLER"]:
+        st.error(f"❌ WNBA Datenfehler: {modell_typ}")
         st.stop()
 
     teams_list = sorted(wnba_df['Team'].tolist())
@@ -311,94 +346,69 @@ else:
     news_away, auto_malus_away = scanne_wnba_injuries(wnba_away)
 
     with st.expander("🚨 KI-Verletzungs-Scanner & News (Live US-Märkte)", expanded=True):
-        st.write("Die KI scannt US-Quellen automatisch nach verletzten Spielerinnen und schlägt Anpassungen vor:")
-        
         c_h, c_a = st.columns(2)
         with c_h:
-            st.markdown(f"**Anpassung {wnba_home}:**")
-            malus_home = st.number_input(f"Punkte-Abzug Heim", value=auto_malus_home, step=0.5, key="mh")
+            malus_home = st.number_input(f"Punkte-Abzug {wnba_home}", value=auto_malus_home, step=0.5, key="mh")
             if news_home:
-                for n in news_home:
-                    st.caption(f"{n['typ']}: [{n['titel'][:40]}...]({n['link']})")
-            else:
-                st.caption("✅ Keine akuten Ausfälle in US-News gefunden.")
-                
+                for n in news_home: st.caption(f"🔴 [{n['titel'][:40]}...]({n['link']})")
         with c_a:
-            st.markdown(f"**Anpassung {wnba_away}:**")
-            malus_away = st.number_input(f"Punkte-Abzug Auswärts", value=auto_malus_away, step=0.5, key="ma")
+            malus_away = st.number_input(f"Punkte-Abzug {wnba_away}", value=auto_malus_away, step=0.5, key="ma")
             if news_away:
-                for n in news_away:
-                    st.caption(f"{n['typ']}: [{n['titel'][:40]}...]({n['link']})")
-            else:
-                st.caption("✅ Keine akuten Ausfälle in US-News gefunden.")
+                for n in news_away: st.caption(f"🔴 [{n['titel'][:40]}...]({n['link']})")
 
     st.write("---")
     st.write("#### Deine Tipico Buchmacher-Lines eintragen:")
     cx, cy = st.columns(2)
     with cx: tipico_total = st.number_input("Tipico Over/Under Linie (z.B. 162.5)", value=161.5, step=0.5)
-    with cy: tipico_hc = st.number_input("Handicap Linie fürs Heimteam (z.B. -3.5)", value=-3.5, step=0.5)
+    with cy: wnba_hc_str = st.text_input("Handicap-Format (z.B. 0:-3.5 oder -3.5:0)", value="-3.5:0")
 
     if st.button("🏀 WNBA Value berechnen", use_container_width=True):
         if modell_typ == "EFFIZIENZ_MODELL":
-            avg_pts = wnba_df['PTS'].mean()
-            avg_pace = wnba_df['PACE'].mean()
+            avg_pts, avg_pace = wnba_df['PTS'].mean(), wnba_df['PACE'].mean()
             t_home = wnba_df[wnba_df['Team'] == wnba_home].iloc[0]
             t_away = wnba_df[wnba_df['Team'] == wnba_away].iloc[0]
-            
             exp_pace = (t_home['PACE'] * t_away['PACE']) / avg_pace
-            home_off, home_def = t_home['PTS'] / t_home['PACE'], t_home['OPP_PTS'] / t_home['PACE']
-            away_off, away_def = t_away['PTS'] / t_away['PACE'], t_away['OPP_PTS'] / t_away['PACE']
-            league_eff = avg_pts / avg_pace
-            
-            exp_pts_home = exp_pace * (home_off * away_def) / league_eff
-            exp_pts_away = exp_pace * (away_off * home_def) / league_eff
+            exp_pts_home = exp_pace * ((t_home['PTS']/t_home['PACE']) * (t_away['OPP_PTS']/t_away['PACE'])) / (avg_pts/avg_pace)
+            exp_pts_away = exp_pace * ((t_away['PTS']/t_away['PACE']) * (t_home['OPP_PTS']/t_home['PACE'])) / (avg_pts/avg_pace)
         else:
             t_home = wnba_df[wnba_df['Team'] == wnba_home].iloc[0]
             t_away = wnba_df[wnba_df['Team'] == wnba_away].iloc[0]
-            
-            home_pct = t_home['WIN_PCT']
-            away_pct = t_away['WIN_PCT']
-            
-            total_exp = 161.8 
-            diff_exp = 13.5 * (home_pct - away_pct) + 2.5
-            
+            total_exp = 161.8
+            diff_exp = 13.5 * (t_home['WIN_PCT'] - t_away['WIN_PCT']) + 2.5
             exp_pts_home = (total_exp / 2) + (diff_exp / 2)
             exp_pts_away = (total_exp / 2) - (diff_exp / 2)
 
         exp_pts_home -= malus_home
         exp_pts_away -= malus_away
-
         total_exp = exp_pts_home + exp_pts_away
         diff_exp = exp_pts_home - exp_pts_away
         
         sigma_spread, sigma_total = 10.5, 14.0
         
+        # Handicap mathematisch verarbeiten aus dem String
+        hc_h_bonus, hc_a_bonus = parse_handicap(wnba_hc_str)
+        # Netto-Hürde für das Heimteam:
+        netto_hc_hurde = hc_a_bonus - hc_h_bonus
+        
         prob_home_win = norm_sf(0, diff_exp, sigma_spread)
         prob_over = norm_sf(tipico_total, total_exp, sigma_total)
-        prob_hc_cover = norm_sf(-tipico_hc, diff_exp, sigma_spread)
+        prob_hc_cover = norm_sf(netto_hc_hurde, diff_exp, sigma_spread)
 
         st.divider()
         st.subheader("🎯 Value-Prognose für deine Wetten")
-        if malus_home > 0 or malus_away > 0:
-            st.warning(f"⚠️ Ergebnisse angepasst durch berechnete Ausfälle! (-{malus_home} Pkt. / -{malus_away} Pkt.)")
-            
         st.caption(f"Erwarteter Endstand: **{exp_pts_home:.1f} : {exp_pts_away:.1f}** (Gesamtpunkte: {total_exp:.1f})")
         
         c1, c2 = st.columns(2)
-        c1.metric("Siegchance Heim (Moneyline)", f"{prob_home_win*100:.1f}%", f"Fair: {100/(prob_home_win*100+0.01):.2f}")
-        c2.metric("Siegchance Auswärts (Moneyline)", f"{(1-prob_home_win)*100:.1f}%", f"Fair: {100/((1-prob_home_win)*100+0.01):.2f}")
+        c1.metric("Siegchance Heim (ML)", f"{prob_home_win*100:.1f}%")
+        c2.metric("Siegchance Auswärts (ML)", f"{(1-prob_home_win)*100:.1f}%")
         
         st.write("---")
-        st.write("#### Abgleich mit deinen Tipico-Quoten:")
-        
         if prob_over > 0.53:
-            st.success(f"🔥 **Value auf ÜBER {tipico_total}!** Wahrscheinlichkeit: **{prob_over*100:.1f}%** (Faire Quote: {1/prob_over:.2f})")
+            st.success(f"🔥 **Value auf ÜBER {tipico_total}!** Chance: **{prob_over*100:.1f}%**")
         elif prob_over < 0.47:
-            st.success(f"🔥 **Value auf UNTER {tipico_total}!** Wahrscheinlichkeit: **{(1-prob_over)*100:.1f}%** (Faire Quote: {1/(1-prob_over):.2f})")
-        else:
-            st.info(f"⚪ Linie {tipico_total} ist stabil quotiert ({prob_over*100:.1f}% Über). Kein Value.")
+            st.success(f"🔥 **Value auf UNTER {tipico_total}!** Chance: **{(1-prob_over)*100:.1f}%**")
             
         if prob_hc_cover > 0.53:
-            st.success(f"🔥 **Value auf Handicap {wnba_home} ({tipico_hc})!** Chance: **{prob_hc_cover*100:.1f}%**")
+            st.success(f"🔥 **Value auf Handicap {wnba_home} ({wnba_hc_str})!** Chance: **{prob_hc_cover*100:.1f}%**")
         elif prob_hc_cover < 0.47:
-            st.success(f"🔥 **Value auf Handicap {wnba_away} (+{-tipico_hc})!** Chance: **{(1-prob_hc_cover)*100:.1f}%**")
+            st.success(f"🔥 **Value auf Handicap {wnba_away} (Gegenhandicap)!** Chance: **{(1-prob_hc_cover)*100:.1f}%**")
