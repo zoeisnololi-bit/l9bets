@@ -4,11 +4,14 @@ import glob
 import math
 import warnings
 import os
+import urllib.request
+import urllib.parse
+import xml.etree.ElementTree as ET
+
 warnings.filterwarnings('ignore')
 
-# --- EIGENE MATHEMATISCHE FUNKTIONEN (ERSETZT SCIPY KOMPLETT) ---
+# --- EIGENE MATHEMATISCHE FUNKTIONEN ---
 def poisson_pmf(k, lamb):
-    """Berechnet die Poisson-Wahrscheinlichkeit ohne scipy."""
     if lamb <= 0: return 0
     try:
         return (lamb**k * math.exp(-lamb)) / math.factorial(k)
@@ -16,23 +19,45 @@ def poisson_pmf(k, lamb):
         return 0
 
 def norm_sf(x, mu, sigma):
-    """Berechnet die Normalverteilung (Survival Function / Über-Wahrscheinlichkeit) ohne scipy."""
     if sigma <= 0: sigma = 0.01
     z = (x - mu) / sigma
     try:
-        # Nutzen der eingebauten math.erfc Funktion für präzise Wahrscheinlichkeiten
         return 0.5 * math.erfc(z / math.sqrt(2))
     except:
         return 0.5
 
+# --- LIVE NEWS FETCHER (OHNE API-KEY, NUTZT NATIVEN RSS-FEED) ---
+def hole_live_news(team1, team2=None):
+    try:
+        suchbegriff = f"{team1} {team2}" if team2 else team1
+        encoded_query = urllib.parse.quote(suchbegriff)
+        url = f"https://news.google.com/rss/search?q={encoded_query}+sport&hl=de&gl=DE&ceid=DE:de"
+        
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
+        with urllib.request.urlopen(req, timeout=4) as response:
+            xml_data = response.read()
+            
+        root = ET.fromstring(xml_data)
+        news_liste = []
+        for item in root.findall('.//item')[:4]:  # Top 4 Newsartikel
+            titel = item.find('title').text
+            link = item.find('link').text
+            # Säubere den Quellennamen am Ende des Titels (z.B. " - Kicker")
+            if " - " in titel:
+                titel = titel.rsplit(" - ", 1)[0]
+            news_liste.append({"titel": titel, "link": link})
+        return news_liste
+    except:
+        return []
+
 # --- STREAMLIT CONFIG ---
-st.set_page_config(page_title="L9 Bets", page_icon="📈", layout="centered")
+st.set_page_config(page_title="L9 Bets v1", page_icon="📈", layout="centered")
 
 # --- SPORTARTAUSWAHL ---
 sportart = st.sidebar.radio("Sportart wählen", ["⚽ Fußball (Minor Leagues)", "🏀 WNBA Basketball (CSV)"])
 
 # ==============================================================================
-# SÄULE 1: FUSSBALL (POISSON-MODELL)
+# SÄULE 1: FUSSBALL (POISSON-MODELL + AUTOMATISCHE NEWS)
 # ==============================================================================
 if sportart == "⚽ Fußball (Minor Leagues)":
     st.title("⚽ Tipico Fußball-Analyst (Minor Leagues)")
@@ -131,9 +156,19 @@ if sportart == "⚽ Fußball (Minor Leagues)":
             c4, c5 = st.columns(2)
             c4.metric("Über 2.5 Tore", f"{over25*100:.1f}%")
             c5.metric("Beide treffen (BTTS)", f"{btts_yes*100:.1f}%")
+            
+            # AUTOMATISCHE NEWS IM FOOTER ANZEIGEN
+            st.write("---")
+            st.write("📰 **Automatische Live-News für dieses Match:**")
+            news = hole_live_news(home_team, away_team)
+            if news:
+                for n in news:
+                    st.markdown(f"- [{n['titel']}]({n['link']})")
+            else:
+                st.caption("Keine brandaktuellen News im Feed gefunden. Teams scheinen ruhig zu stehen.")
 
 # ==============================================================================
-# SÄULE 2: WNBA BASKETBALL (INTELLIGENTES HYBRID-MODELL FÜR JEDE CSV)
+# SÄULE 2: WNBA BASKETBALL (HYBRID-MODELL + MANUELLE VERLETZUNGS-ZENTRALE)
 # ==============================================================================
 else:
     st.title("🏀 WNBA Buchmacher-Analyst (Hybrid-Version)")
@@ -153,7 +188,6 @@ else:
             clean_df = pd.DataFrame()
             clean_df['Team'] = df[team_col].astype(str).str.strip()
             
-            # Prüfen, ob detaillierte Punkte-Statistiken vorliegen
             pts_col = next((c for c in df.columns if c in ['PTS', 'POINTS', 'PUNKTE']), None)
             opp_col = next((c for c in df.columns if c in ['OPP_PTS', 'OPP_POINTS', 'OPPTS']), None)
             pace_col = next((c for c in df.columns if c in ['PACE', 'SPEED']), None)
@@ -164,14 +198,12 @@ else:
                 clean_df['PACE'] = pd.to_numeric(df[pace_col], errors='coerce')
                 return "EFFIZIENZ_MODELL", clean_df.dropna()
                 
-            # Fallback für historische Tabellen (wie aus Screenshot 5.PNG: W, L, W/L%)
             wl_col = next((c for c in df.columns if c in ['W/L%', 'WIN%', 'PCT', 'WL%']), None)
             w_col = next((c for c in df.columns if c in ['W', 'WINS', 'SIEGE']), None)
             g_col = next((c for c in df.columns if c in ['G', 'GAMES', 'SPIELE']), None)
             
             if wl_col:
                 clean_df['WIN_PCT'] = pd.to_numeric(df[wl_col], errors='coerce')
-                # Falls Prozentwerte als 46.1 statt 0.461 gespeichert sind
                 if clean_df['WIN_PCT'].max() > 1.0: clean_df['WIN_PCT'] /= 100.0
                 return "BILANZ_MODELL", clean_df.dropna()
             elif w_col and g_col:
@@ -193,11 +225,9 @@ else:
         st.error("❌ `wnba_stats.csv` wurde nicht im Hauptordner gefunden.")
         st.stop()
     elif modell_typ == "SPALTEN_FEHLER":
-        st.error("❌ Spalten-Konflikt! Die App konnte weder Punkte- noch Sieg-Statistiken zuordnen.")
-        st.info("Bitte benenne die Teamspalte in deiner CSV zu 'Team' um und stelle sicher, dass 'W' und 'G' oder 'W/L%' existieren.")
+        st.error("❌ Spalten-Konflikt in der WNBA-Datei.")
         st.stop()
 
-    # Visueller Hinweis für den Nutzer, welcher Modus läuft
     if modell_typ == "BILANZ_MODELL":
         st.info("ℹ️ Historischer Bilanz-Modus aktiv (Berechnung basiert auf Win-Loss-Daten deiner Tabelle).")
     else:
@@ -207,6 +237,16 @@ else:
     col1, col2 = st.columns(2)
     with col1: wnba_home = st.selectbox("Heimteam (WNBA)", teams_list, index=0)
     with col2: wnba_away = st.selectbox("Auswärtsteam (WNBA)", teams_list, index=1 if len(teams_list) > 1 else 0)
+
+    # --- MANUELLE VERLETZUNGS-ZENTRALE FÜR WNBA ---
+    with st.expander("🚨 Verletzungen & Statmuse-Einflüsse (Optional einrechnen)", expanded=False):
+        st.write("Trage hier Ausfälle ein, um die errechnete Linie künstlich anzupassen:")
+        
+        malus_home = st.number_input(f"Punkte-Abzug für Heimteam ({wnba_home}) – z.B. 4.5", value=0.0, step=0.5)
+        malus_away = st.number_input(f"Punkte-Abzug für Auswärtsteam ({wnba_away})", value=0.0, step=0.5)
+        
+        st.text_area("Persönliche Statmuse Notizen (Wird nicht mitberechnet, dient nur als Merkzettel):", 
+                     placeholder="z.B. Breanna Stewart fraglich wegen Knie...")
 
     st.write("---")
     st.write("#### Deine Tipico Buchmacher-Lines eintragen:")
@@ -229,20 +269,21 @@ else:
             exp_pts_home = exp_pace * (home_off * away_def) / league_eff
             exp_pts_away = exp_pace * (away_off * home_def) / league_eff
         else:
-            # BILANZ-MODELL (Maßgeschneidert für Screenshot 5.PNG)
             t_home = wnba_df[wnba_df['Team'] == wnba_home].iloc[0]
             t_away = wnba_df[wnba_df['Team'] == wnba_away].iloc[0]
             
             home_pct = t_home['WIN_PCT']
             away_pct = t_away['WIN_PCT']
             
-            # WNBA-Durchschnittswerte als stabiler mathematischer Anker
             total_exp = 161.8 
-            # Errechnet den erwarteten Punkte-Abstand anhand der Win-Verhältnisse + Heimvorteil (+2.5 Punkte)
             diff_exp = 13.5 * (home_pct - away_pct) + 2.5
             
             exp_pts_home = (total_exp / 2) + (diff_exp / 2)
             exp_pts_away = (total_exp / 2) - (diff_exp / 2)
+
+        # HIER WERDEN DIE MANUELLEN VERLETZUNGS-MALUS-WERTE DIREKT ABGEZOGEN
+        exp_pts_home -= malus_home
+        exp_pts_away -= malus_away
 
         total_exp = exp_pts_home + exp_pts_away
         diff_exp = exp_pts_home - exp_pts_away
@@ -255,6 +296,9 @@ else:
 
         st.divider()
         st.subheader("🎯 Value-Prognose für deine Wetten")
+        if malus_home > 0 or malus_away > 0:
+            st.warning(f"⚠️ Ergebnisse angepasst durch deine eingetragenen Verletzungs-Abzüge! (-{malus_home} / -{malus_away})")
+            
         st.caption(f"Erwarteter Endstand: **{exp_pts_home:.1f} : {exp_pts_away:.1f}** (Gesamtpunkte: {total_exp:.1f})")
         
         c1, c2 = st.columns(2)
