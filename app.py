@@ -9,7 +9,7 @@ warnings.filterwarnings('ignore')
 st.set_page_config(page_title="L9 Bets", page_icon="📈", layout="centered")
 
 # --- SPORTARTAUSWAHL ---
-sportart = st.sidebar.radio("Sportart wählen", ["⚽ Fußball (Minor Leagues)", "🏀 WNBA Basketball"])
+sportart = st.sidebar.radio("Sportart wählen", ["⚽ Fußball (Minor Leagues)", "🏀 WNBA Basketball (CSV)"])
 
 # ==============================================================================
 # SÄULE 1: FUSSBALL (POISSON-MODELL)
@@ -20,8 +20,10 @@ if sportart == "⚽ Fußball (Minor Leagues)":
 
     @st.cache_data
     def lade_fussball_daten():
-        csv_dateien = glob.glob('*.csv')
+        # Alle CSVs holen, außer der WNBA-Statistikdatei
+        csv_dateien = [f for f in glob.glob('*.csv') if f != 'wnba_stats.csv']
         if not csv_dateien: return None, None, None
+        
         daten_liste = []
         for datei in csv_dateien:
             try:
@@ -30,6 +32,7 @@ if sportart == "⚽ Fußball (Minor Leagues)":
                 df_temp = df_temp[[c for c in benoetigte if c in df_temp.columns]]
                 daten_liste.append(df_temp)
             except: pass
+            
         if not daten_liste: return None, None, None
         df_gesamt = pd.concat(daten_liste, ignore_index=True).dropna()
         
@@ -61,7 +64,7 @@ if sportart == "⚽ Fußball (Minor Leagues)":
 
     df_gesamt, liga_daten, alle_teams = lade_fussball_daten()
     if df_gesamt is None:
-        st.error("❌ Keine CSV-Dateien im Ordner gefunden! Lade die Dateien für Griechenland (G1), Schweden, Norwegen etc. hoch.")
+        st.error("❌ Keine Fußball-CSV-Dateien im Ordner gefunden!")
         st.stop()
 
     col1, col2 = st.columns(2)
@@ -111,108 +114,92 @@ if sportart == "⚽ Fußball (Minor Leagues)":
             c5.metric("Beide treffen (BTTS)", f"{btts_yes*100:.1f}%")
 
 # ==============================================================================
-# SÄULE 2: WNBA BASKETBALL (EFFIZIENZ & GAUSS-MODELL)
+# SÄULE 2: WNBA BASKETBALL (EFFIZIENZ-MODELL ÜBER LOKALE CSV)
 # ==============================================================================
 else:
-    st.title("🏀 WNBA Buchmacher-Zerstörer")
-    st.markdown("Nutzt Live-Effizienzdaten & Pace-Berechnungen (Normalverteilung).")
+    st.title("🏀 WNBA Buchmacher-Zerstörer (CSV Edition)")
+    st.markdown("Nutzt die Daten aus deiner hochgeladenen `wnba_stats.csv`.")
 
-    @st.cache_data(ttl=3600) # Aktualisiert die API-Daten jede Stunde neu
+    @st.cache_data
     def lade_wnba_daten():
         try:
-            from nba_api.stats.endpoints import leaguedashteamstats
-            # Holt die echten WNBA Daten der aktuellen Saison ('10' steht für die WNBA)
-            raw_stats = leaguedashteamstats.LeagueDashTeamStats(league_id='10', season='2026').get_data_frames()[0]
-            
-            df = pd.DataFrame()
-            df['Team'] = raw_stats['TEAM_NAME']
-            df['PTS'] = raw_stats['PTS'] / raw_stats['GP']       # Punkte pro Spiel
-            df['OPP_PTS'] = raw_stats['OPP_PTS'] / raw_stats['GP'] # Kassierte Punkte pro Spiel
-            df['PACE'] = raw_stats['PACE']                       # Angriffe pro Spiel
+            df = pd.read_csv('wnba_stats.csv', encoding='utf-8')
+            df.columns = df.columns.str.strip() # Entfernt versteckte Leerzeichen in den Spaltenköpfen
             return df
-        except Exception as e:
-            # Sicherheits-Fallback falls NBA.com den Server kurzzeitig blockiert
-            st.warning("⚠️ Live-API temporär überlastet. Nutze historische Durchschnitts-Matrix.")
-            teams = ['New York Liberty', 'Las Vegas Aces', 'Connecticut Sun', 'Minnesota Lynx', 
-                     'Seattle Storm', 'Indiana Fever', 'Phoenix Mercury', 'Atlanta Dream', 
-                     'Chicago Sky', 'Los Angeles Sparks', 'Dallas Wings', 'Washington Mystics']
-            return pd.DataFrame({
-                'Team': teams, 'PTS': [85.4, 88.2, 80.1, 82.3, 83.5, 81.2, 82.0, 79.5, 80.8, 78.9, 81.5, 76.4],
-                'OPP_PTS': [79.2, 80.5, 74.8, 76.1, 78.9, 84.1, 83.2, 81.0, 82.1, 83.4, 84.9, 81.8],
-                'PACE': [78.2, 80.1, 76.5, 77.9, 78.5, 81.0, 79.8, 78.1, 79.0, 78.6, 79.9, 77.2]
-            })
+        except:
+            return None
 
     wnba_df = lade_wnba_daten()
-    teams_list = sorted(wnba_df['Team'].tolist())
 
-    col1, col2 = st.columns(2)
-    with col1: wnba_home = st.selectbox("Heimteam (WNBA)", teams_list, index=0)
-    with col2: wnba_away = st.selectbox("Auswärtsteam (WNBA)", teams_list, index=1)
+    if wnba_df is None:
+        st.error("❌ Datei `wnba_stats.csv` wurde im Repository nicht gefunden!")
+        st.info("Bitte erstelle eine Datei namens `wnba_stats.csv` mit den Spalten: Team, PTS, OPP_PTS, PACE")
+        st.stop()
+    else:
+        teams_list = sorted(wnba_df['Team'].tolist())
 
-    st.write("---")
-    st.write("#### Deine Tipico Buchmacher-Lines eintragen:")
-    cx, cy = st.columns(2)
-    with cx: tipico_total = st.number_input("Tipico Over/Under Linie (z.B. 162.5)", value=161.5, step=0.5)
-    with cy: tipico_hc = st.number_input("Handicap Linie fürs Heimteam (z.B. -4.5)", value=-3.5, step=0.5)
+        col1, col2 = st.columns(2)
+        with col1: wnba_home = st.selectbox("Heimteam (WNBA)", teams_list, index=0)
+        with col2: wnba_away = st.selectbox("Auswärtsteam (WNBA)", teams_list, index=1 if len(teams_list) > 1 else 0)
 
-    if st.button("🏀 WNBA Value berechnen", use_container_width=True):
-        # Liga-Schnitt
-        avg_pts = wnba_df['PTS'].mean()
-        avg_pace = wnba_df['PACE'].mean()
-        
-        # Teamwerte isolieren
-        t_home = wnba_df[wnba_df['Team'] == wnba_home].iloc[0]
-        t_away = wnba_df[wnba_df['Team'] == wnba_away].iloc[0]
-        
-        # Berechnung des erwarteten Speeds (Pace)
-        exp_pace = (t_home['PACE'] * t_away['PACE']) / avg_pace
-        
-        # Offensiv- & Defensiv-Ratings (Punkte pro Ballbesitz)
-        home_off = t_home['PTS'] / t_home['PACE']
-        home_def = t_home['OPP_PTS'] / t_home['PACE']
-        away_off = t_away['PTS'] / t_away['PACE']
-        away_def = t_away['OPP_PTS'] / t_away['PACE']
-        league_eff = avg_pts / avg_pace
-        
-        # Erwartete Punkte
-        exp_pts_home = exp_pace * (home_off * away_def) / league_eff
-        exp_pts_away = exp_pace * (away_off * home_def) / league_eff
-        
-        # Mathematische Projektionen
-        total_exp = exp_pts_home + exp_pts_away
-        diff_exp = exp_pts_home - exp_pts_away # Positiv = Heimsieg, Negativ = Auswärtssieg
-        
-        # WNBA Standardabweichungen (Standard in der Analytik: 10.5 für Spread, 14.0 für Totals)
-        sigma_spread = 10.5
-        sigma_total = 14.0
-        
-        # Wahrscheinlichkeiten berechnen über Gauß-Normalverteilung
-        prob_home_win = norm.sf(0, loc=diff_exp, scale=sigma_spread)
-        prob_over = norm.sf(tipico_total, loc=total_exp, scale=sigma_total)
-        prob_hc_cover = norm.sf(-tipico_hc, loc=diff_exp, scale=sigma_spread)
-
-        # --- CODE AUSGABE ---
-        st.divider()
-        st.subheader("🎯 Value-Prognose für deine Wetten")
-        st.caption(f"Erwarteter Endstand: **{exp_pts_home:.1f} : {exp_pts_away:.1f}** (Gesamtpunkte: {total_exp:.1f})")
-        
-        c1, c2 = st.columns(2)
-        c1.metric("Siegchance Heim (Moneyline)", f"{prob_home_win*100:.1f}%", f"Fair: {100/(prob_home_win*100+0.01):.2f}")
-        c2.metric("Siegchance Auswärts (Moneyline)", f"{(1-prob_home_win)*100:.1f}%", f"Fair: {100/((1-prob_home_win)*100+0.01):.2f}")
-        
         st.write("---")
-        st.write("#### Abgleich mit deinen Tipico-Quoten:")
-        
-        # Over / Under Matcher
-        if prob_over > 0.53:
-            st.success(f"🔥 **Value auf ÜBER {tipico_total}!** Wahrscheinlichkeit: **{prob_over*100:.1f}%** (Faire Quote: {1/prob_over:.2f})")
-        elif prob_over < 0.47:
-            st.success(f"🔥 **Value auf UNTER {tipico_total}!** Wahrscheinlichkeit: **{(1-prob_over)*100:.1f}%** (Faire Quote: {1/(1-prob_over):.2f})")
-        else:
-            st.info(f"⚪ Linie {tipico_total} ist genau richtig quotiert ({prob_over*100:.1f}% Über). Kein Value.")
+        st.write("#### Deine Tipico Buchmacher-Lines eintragen:")
+        cx, cy = st.columns(2)
+        with cx: tipico_total = st.number_input("Tipico Over/Under Linie (z.B. 162.5)", value=161.5, step=0.5)
+        with cy: tipico_hc = st.number_input("Handicap Linie fürs Heimteam (z.B. -4.5)", value=-3.5, step=0.5)
+
+        if st.button("🏀 WNBA Value berechnen", use_container_width=True):
+            avg_pts = wnba_df['PTS'].mean()
+            avg_pace = wnba_df['PACE'].mean()
             
-        # Handicap Matcher
-        if prob_hc_cover > 0.53:
-            st.success(f"🔥 **Value auf Handicap {wnba_home} ({tipico_hc})!** Chance: **{prob_hc_cover*100:.1f}%**")
-        elif prob_hc_cover < 0.47:
-            st.success(f"🔥 **Value auf Handicap {wnba_away} (+{-tipico_hc})!** Chance: **{(1-prob_hc_cover)*100:.1f}%**")
+            t_home = wnba_df[wnba_df['Team'] == wnba_home].iloc[0]
+            t_away = wnba_df[wnba_df['Team'] == wnba_away].iloc[0]
+            
+            # Erwartete Pace (Spielgeschwindigkeit)
+            exp_pace = (t_home['PACE'] * t_away['PACE']) / avg_pace
+            
+            # Offensiv- & Defensiv-Effizienz berechnen
+            home_off = t_home['PTS'] / t_home['PACE']
+            home_def = t_home['OPP_PTS'] / t_home['PACE']
+            away_off = t_away['PTS'] / t_away['PACE']
+            away_def = t_away['OPP_PTS'] / t_away['PACE']
+            league_eff = avg_pts / avg_pace
+            
+            # Erwartete Punkte werfen
+            exp_pts_home = exp_pace * (home_off * away_def) / league_eff
+            exp_pts_away = exp_pace * (away_off * home_def) / league_eff
+            
+            total_exp = exp_pts_home + exp_pts_away
+            diff_exp = exp_pts_home - exp_pts_away
+            
+            # Mathematische Standardabweichung (WNBA Metrik)
+            sigma_spread = 10.5
+            sigma_total = 14.0
+            
+            # Wahrscheinlichkeiten via Gauß-Glockenkurve
+            prob_home_win = norm.sf(0, loc=diff_exp, scale=sigma_spread)
+            prob_over = norm.sf(tipico_total, loc=total_exp, scale=sigma_total)
+            prob_hc_cover = norm.sf(-tipico_hc, loc=diff_exp, scale=sigma_spread)
+
+            st.divider()
+            st.subheader("🎯 Value-Prognose für deine Wetten")
+            st.caption(f"Erwarteter Endstand: **{exp_pts_home:.1f} : {exp_pts_away:.1f}** (Gesamtpunkte: {total_exp:.1f})")
+            
+            c1, c2 = st.columns(2)
+            c1.metric("Siegchance Heim (Moneyline)", f"{prob_home_win*100:.1f}%", f"Fair: {100/(prob_home_win*100+0.01):.2f}")
+            c2.metric("Siegchance Auswärts (Moneyline)", f"{(1-prob_home_win)*100:.1f}%", f"Fair: {100/((1-prob_home_win)*100+0.01):.2f}")
+            
+            st.write("---")
+            st.write("#### Abgleich mit deinen Tipico-Quoten:")
+            
+            if prob_over > 0.53:
+                st.success(f"🔥 **Value auf ÜBER {tipico_total}!** Wahrscheinlichkeit: **{prob_over*100:.1f}%** (Faire Quote: {1/prob_over:.2f})")
+            elif prob_over < 0.47:
+                st.success(f"🔥 **Value auf UNTER {tipico_total}!** Wahrscheinlichkeit: **{(1-prob_over)*100:.1f}%** (Faire Quote: {1/(1-prob_over):.2f})")
+            else:
+                st.info(f"⚪ Linie {tipico_total} ist stabil quotiert ({prob_over*100:.1f}% Über). Kein Value.")
+                
+            if prob_hc_cover > 0.53:
+                st.success(f"🔥 **Value auf Handicap {wnba_home} ({tipico_hc})!** Chance: **{prob_hc_cover*100:.1f}%**")
+            elif prob_hc_cover < 0.47:
+                st.success(f"🔥 **Value auf Handicap {wnba_away} (+{-tipico_hc})!** Chance: **{(1-prob_hc_cover)*100:.1f}%**")
