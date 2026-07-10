@@ -123,12 +123,13 @@ else:
     @st.cache_data
     def lade_wnba_daten():
         try:
-            df = pd.read_csv('wnba_stats.csv', encoding='utf-8')
+            # sep=None & engine='python' erkennt automatisch Komma ODER Semikolon!
+            df = pd.read_csv('wnba_stats.csv', sep=None, engine='python', encoding='utf-8')
             df.columns = df.columns.str.strip() # Entfernt versteckte Leerzeichen in den Spaltenköpfen
             return df
         except:
             return None
-
+            
     wnba_df = lade_wnba_daten()
 
     if wnba_df is None:
