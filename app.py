@@ -1,12 +1,31 @@
 import streamlit as st
 import pandas as pd
 import glob
-from scipy.stats import poisson, norm
+import math
 import warnings
 import os
 warnings.filterwarnings('ignore')
 
-# --- CONFIG ---
+# --- EIGENE MATHEMATISCHE FUNKTIONEN (ERSETZT SCIPY KOMPLETT) ---
+def poisson_pmf(k, lamb):
+    """Berechnet die Poisson-Wahrscheinlichkeit ohne scipy."""
+    if lamb <= 0: return 0
+    try:
+        return (lamb**k * math.exp(-lamb)) / math.factorial(k)
+    except:
+        return 0
+
+def norm_sf(x, mu, sigma):
+    """Berechnet die Normalverteilung (Survival Function / Über-Wahrscheinlichkeit) ohne scipy."""
+    if sigma <= 0: sigma = 0.01
+    z = (x - mu) / sigma
+    try:
+        # Nutzen der eingebauten math.erfc Funktion für präzise Wahrscheinlichkeiten
+        return 0.5 * math.erfc(z / math.sqrt(2))
+    except:
+        return 0.5
+
+# --- STREAMLIT CONFIG ---
 st.set_page_config(page_title="L9 Bets", page_icon="📈", layout="centered")
 
 # --- SPORTARTAUSWAHL ---
@@ -21,7 +40,6 @@ if sportart == "⚽ Fußball (Minor Leagues)":
 
     @st.cache_data
     def lade_fussball_daten():
-        # Alle CSVs holen, außer der WNBA-Statistikdatei
         csv_dateien = [f for f in glob.glob('*.csv') if f != 'wnba_stats.csv']
         if not csv_dateien: return None, None, None
         
@@ -89,13 +107,13 @@ if sportart == "⚽ Fußball (Minor Leagues)":
             
             home_win, draw, away_win, over25, btts_yes = 0, 0, 0, 0, 0
             for i in range(6):
-                p_ht_h = poisson.pmf(i, ht_home_xg)
+                p_ht_h = poisson_pmf(i, ht_home_xg)
                 for j in range(6):
-                    p_ht = p_ht_h * poisson.pmf(j, ht_away_xg)
+                    p_ht = p_ht_h * poisson_pmf(j, ht_away_xg)
                     for k in range(6):
-                        p_sh_h = poisson.pmf(k, sh_home_xg)
+                        p_sh_h = poisson_pmf(k, sh_home_xg)
                         for l in range(6):
-                            p_full = p_ht * p_sh_h * poisson.pmf(l, sh_away_xg)
+                            p_full = p_ht * p_sh_h * poisson_pmf(l, sh_away_xg)
                             f_h, f_a = i + k, j + l
                             if f_h > f_a: home_win += p_full
                             elif f_h == f_a: draw += p_full
@@ -115,123 +133,145 @@ if sportart == "⚽ Fußball (Minor Leagues)":
             c5.metric("Beide treffen (BTTS)", f"{btts_yes*100:.1f}%")
 
 # ==============================================================================
-# SÄULE 2: WNBA BASKETBALL (EFFIZIENZ-MODELL ÜBER LOKALE CSV)
+# SÄULE 2: WNBA BASKETBALL (INTELLIGENTES HYBRID-MODELL FÜR JEDE CSV)
 # ==============================================================================
 else:
-    st.title("🏀 WNBA Buchmacher-Zerstörer (CSV Edition)")
-    st.markdown("Nutzt die Daten aus deiner hochgeladenen `wnba_stats.csv`.")
+    st.title("🏀 WNBA Buchmacher-Analyst (Hybrid-Version)")
 
     @st.cache_data
     def lade_wnba_daten():
         if not os.path.exists('wnba_stats.csv'):
-            return "FEHLT"
+            return "FEHLT", None
         try:
-            # Erkennt automatisch Trennzeichen (Komma oder Semikolon)
             df = pd.read_csv('wnba_stats.csv', sep=None, engine='python', encoding='utf-8')
-            
-            # Bereinigt Spaltennamen (Großbuchstaben & ohne Leerzeichen)
             df.columns = [str(c).strip().upper() for c in df.columns]
             
-            # Intelligentes Mapping für fehlerhafte Spaltennamen
             team_col = next((c for c in df.columns if c in ['TEAM', 'TEAM_NAME', 'NAME', 'MANNSCHAFT']), None)
-            pts_col = next((c for c in df.columns if c in ['PTS', 'POINTS', 'PUNKTE', 'PPG']), None)
-            opp_col = next((c for c in df.columns if c in ['OPP_PTS', 'OPP_POINTS', 'GEGNER_PUNKTE', 'OPPTS']), None)
-            pace_col = next((c for c in df.columns if c in ['PACE', 'SPEED', 'GESCHWINDIGKEIT']), None)
-            
-            if not all([team_col, pts_col, opp_col, pace_col]):
-                return "SPALTEN_FEHLER"
+            if not team_col:
+                return "SPALTEN_FEHLER", None
                 
             clean_df = pd.DataFrame()
             clean_df['Team'] = df[team_col].astype(str).str.strip()
-            clean_df['PTS'] = pd.to_numeric(df[pts_col], errors='coerce')
-            clean_df['OPP_PTS'] = pd.to_numeric(df[opp_col], errors='coerce')
-            clean_df['PACE'] = pd.to_numeric(df[pace_col], errors='coerce')
             
-            return clean_df.dropna()
+            # Prüfen, ob detaillierte Punkte-Statistiken vorliegen
+            pts_col = next((c for c in df.columns if c in ['PTS', 'POINTS', 'PUNKTE']), None)
+            opp_col = next((c for c in df.columns if c in ['OPP_PTS', 'OPP_POINTS', 'OPPTS']), None)
+            pace_col = next((c for c in df.columns if c in ['PACE', 'SPEED']), None)
+            
+            if pts_col and opp_col and pace_col:
+                clean_df['PTS'] = pd.to_numeric(df[pts_col], errors='coerce')
+                clean_df['OPP_PTS'] = pd.to_numeric(df[opp_col], errors='coerce')
+                clean_df['PACE'] = pd.to_numeric(df[pace_col], errors='coerce')
+                return "EFFIZIENZ_MODELL", clean_df.dropna()
+                
+            # Fallback für historische Tabellen (wie aus Screenshot 5.PNG: W, L, W/L%)
+            wl_col = next((c for c in df.columns if c in ['W/L%', 'WIN%', 'PCT', 'WL%']), None)
+            w_col = next((c for c in df.columns if c in ['W', 'WINS', 'SIEGE']), None)
+            g_col = next((c for c in df.columns if c in ['G', 'GAMES', 'SPIELE']), None)
+            
+            if wl_col:
+                clean_df['WIN_PCT'] = pd.to_numeric(df[wl_col], errors='coerce')
+                # Falls Prozentwerte als 46.1 statt 0.461 gespeichert sind
+                if clean_df['WIN_PCT'].max() > 1.0: clean_df['WIN_PCT'] /= 100.0
+                return "BILANZ_MODELL", clean_df.dropna()
+            elif w_col and g_col:
+                w = pd.to_numeric(df[w_col], errors='coerce').fillna(0)
+                g = pd.to_numeric(df[g_col], errors='coerce').fillna(1)
+                clean_df['WIN_PCT'] = w / g.replace(0, 1)
+                return "BILANZ_MODELL", clean_df.dropna()
+                
+            return "SPALTEN_FEHLER", None
         except Exception as e:
-            return f"ERROR: {str(e)}"
+            return f"ERROR: {str(e)}", None
 
-    wnba_df = lade_wnba_daten()
+    modell_typ, wnba_df = lade_wnba_daten()
 
-    # Fehlerbehandlung statt rohem Absturz
-    if isinstance(wnba_df, str):
-        if wnba_df == "FEHLT":
-            st.error("❌ Die Datei `wnba_stats.csv` wurde in deinem Repository nicht gefunden!")
-            st.info("Bitte erstelle eine Datei namens `wnba_stats.csv` auf GitHub.")
-        elif wnba_df == "SPALTEN_FEHLER":
-            st.error("❌ Spalten-Konflikt! Die Spaltennamen in deiner CSV sind ungültig.")
-            st.info("Bitte stelle sicher, dass die erste Zeile deiner CSV exakt so heißt:\n`Team,PTS,OPP_PTS,PACE`")
-        else:
-            st.error(f"❌ Unbekannter Ladefehler: {wnba_df}")
+    if "ERROR" in str(modell_typ):
+        st.error(f"❌ Fehler beim Laden: {modell_typ}")
         st.stop()
-    
-    elif wnba_df.empty:
-        st.error("❌ Die `wnba_stats.csv` wurde geladen, enthält aber keine auswertbaren Daten.")
+    elif modell_typ == "FEHLT":
+        st.error("❌ `wnba_stats.csv` wurde nicht im Hauptordner gefunden.")
         st.stop()
-        
+    elif modell_typ == "SPALTEN_FEHLER":
+        st.error("❌ Spalten-Konflikt! Die App konnte weder Punkte- noch Sieg-Statistiken zuordnen.")
+        st.info("Bitte benenne die Teamspalte in deiner CSV zu 'Team' um und stelle sicher, dass 'W' und 'G' oder 'W/L%' existieren.")
+        st.stop()
+
+    # Visueller Hinweis für den Nutzer, welcher Modus läuft
+    if modell_typ == "BILANZ_MODELL":
+        st.info("ℹ️ Historischer Bilanz-Modus aktiv (Berechnung basiert auf Win-Loss-Daten deiner Tabelle).")
     else:
-        teams_list = sorted(wnba_df['Team'].tolist())
+        st.success("🎯 Erweitertes Effizienz-Modell aktiv (Punkte- & Pace-Statistiken erkannt).")
 
-        col1, col2 = st.columns(2)
-        with col1: wnba_home = st.selectbox("Heimteam (WNBA)", teams_list, index=0)
-        with col2: wnba_away = st.selectbox("Auswärtsteam (WNBA)", teams_list, index=1 if len(teams_list) > 1 else 0)
+    teams_list = sorted(wnba_df['Team'].tolist())
+    col1, col2 = st.columns(2)
+    with col1: wnba_home = st.selectbox("Heimteam (WNBA)", teams_list, index=0)
+    with col2: wnba_away = st.selectbox("Auswärtsteam (WNBA)", teams_list, index=1 if len(teams_list) > 1 else 0)
 
-        st.write("---")
-        st.write("#### Deine Tipico Buchmacher-Lines eintragen:")
-        cx, cy = st.columns(2)
-        with cx: tipico_total = st.number_input("Tipico Over/Under Linie (z.B. 162.5)", value=161.5, step=0.5)
-        with cy: tipico_hc = st.number_input("Handicap Linie fürs Heimteam (z.B. -3.5)", value=-3.5, step=0.5)
+    st.write("---")
+    st.write("#### Deine Tipico Buchmacher-Lines eintragen:")
+    cx, cy = st.columns(2)
+    with cx: tipico_total = st.number_input("Tipico Over/Under Linie (z.B. 162.5)", value=161.5, step=0.5)
+    with cy: tipico_hc = st.number_input("Handicap Linie fürs Heimteam (z.B. -3.5)", value=-3.5, step=0.5)
 
-        if st.button("🏀 WNBA Value berechnen", use_container_width=True):
+    if st.button("🏀 WNBA Value berechnen", use_container_width=True):
+        if modell_typ == "EFFIZIENZ_MODELL":
             avg_pts = wnba_df['PTS'].mean()
             avg_pace = wnba_df['PACE'].mean()
-            
             t_home = wnba_df[wnba_df['Team'] == wnba_home].iloc[0]
             t_away = wnba_df[wnba_df['Team'] == wnba_away].iloc[0]
             
-            # Erwartete Pace
             exp_pace = (t_home['PACE'] * t_away['PACE']) / avg_pace
-            
-            # Effizienzen
-            home_off = t_home['PTS'] / t_home['PACE']
-            home_def = t_home['OPP_PTS'] / t_home['PACE']
-            away_off = t_away['PTS'] / t_away['PACE']
-            away_def = t_away['OPP_PTS'] / t_away['PACE']
+            home_off, home_def = t_home['PTS'] / t_home['PACE'], t_home['OPP_PTS'] / t_home['PACE']
+            away_off, away_def = t_away['PTS'] / t_away['PACE'], t_away['OPP_PTS'] / t_away['PACE']
             league_eff = avg_pts / avg_pace
             
-            # Erwartete Punkte
             exp_pts_home = exp_pace * (home_off * away_def) / league_eff
             exp_pts_away = exp_pace * (away_off * home_def) / league_eff
+        else:
+            # BILANZ-MODELL (Maßgeschneidert für Screenshot 5.PNG)
+            t_home = wnba_df[wnba_df['Team'] == wnba_home].iloc[0]
+            t_away = wnba_df[wnba_df['Team'] == wnba_away].iloc[0]
             
-            total_exp = exp_pts_home + exp_pts_away
-            diff_exp = exp_pts_home - exp_pts_away
+            home_pct = t_home['WIN_PCT']
+            away_pct = t_away['WIN_PCT']
             
-            sigma_spread = 10.5
-            sigma_total = 14.0
+            # WNBA-Durchschnittswerte als stabiler mathematischer Anker
+            total_exp = 161.8 
+            # Errechnet den erwarteten Punkte-Abstand anhand der Win-Verhältnisse + Heimvorteil (+2.5 Punkte)
+            diff_exp = 13.5 * (home_pct - away_pct) + 2.5
             
-            prob_home_win = norm.sf(0, loc=diff_exp, scale=sigma_spread)
-            prob_over = norm.sf(tipico_total, loc=total_exp, scale=sigma_total)
-            prob_hc_cover = norm.sf(-tipico_hc, loc=diff_exp, scale=sigma_spread)
+            exp_pts_home = (total_exp / 2) + (diff_exp / 2)
+            exp_pts_away = (total_exp / 2) - (diff_exp / 2)
 
-            st.divider()
-            st.subheader("🎯 Value-Prognose für deine Wetten")
-            st.caption(f"Erwarteter Endstand: **{exp_pts_home:.1f} : {exp_pts_away:.1f}** (Gesamtpunkte: {total_exp:.1f})")
+        total_exp = exp_pts_home + exp_pts_away
+        diff_exp = exp_pts_home - exp_pts_away
+        
+        sigma_spread, sigma_total = 10.5, 14.0
+        
+        prob_home_win = norm_sf(0, diff_exp, sigma_spread)
+        prob_over = norm_sf(tipico_total, total_exp, sigma_total)
+        prob_hc_cover = norm_sf(-tipico_hc, diff_exp, sigma_spread)
+
+        st.divider()
+        st.subheader("🎯 Value-Prognose für deine Wetten")
+        st.caption(f"Erwarteter Endstand: **{exp_pts_home:.1f} : {exp_pts_away:.1f}** (Gesamtpunkte: {total_exp:.1f})")
+        
+        c1, c2 = st.columns(2)
+        c1.metric("Siegchance Heim (Moneyline)", f"{prob_home_win*100:.1f}%", f"Fair: {100/(prob_home_win*100+0.01):.2f}")
+        c2.metric("Siegchance Auswärts (Moneyline)", f"{(1-prob_home_win)*100:.1f}%", f"Fair: {100/((1-prob_home_win)*100+0.01):.2f}")
+        
+        st.write("---")
+        st.write("#### Abgleich mit deinen Tipico-Quoten:")
+        
+        if prob_over > 0.53:
+            st.success(f"🔥 **Value auf ÜBER {tipico_total}!** Wahrscheinlichkeit: **{prob_over*100:.1f}%** (Faire Quote: {1/prob_over:.2f})")
+        elif prob_over < 0.47:
+            st.success(f"🔥 **Value auf UNTER {tipico_total}!** Wahrscheinlichkeit: **{(1-prob_over)*100:.1f}%** (Faire Quote: {1/(1-prob_over):.2f})")
+        else:
+            st.info(f"⚪ Linie {tipico_total} ist stabil quotiert ({prob_over*100:.1f}% Über). Kein Value.")
             
-            c1, c2 = st.columns(2)
-            c1.metric("Siegchance Heim (Moneyline)", f"{prob_home_win*100:.1f}%", f"Fair: {100/(prob_home_win*100+0.01):.2f}")
-            c2.metric("Siegchance Auswärts (Moneyline)", f"{(1-prob_home_win)*100:.1f}%", f"Fair: {100/((1-prob_home_win)*100+0.01):.2f}")
-            
-            st.write("---")
-            st.write("#### Abgleich mit deinen Tipico-Quoten:")
-            
-            if prob_over > 0.53:
-                st.success(f"🔥 **Value auf ÜBER {tipico_total}!** Wahrscheinlichkeit: **{prob_over*100:.1f}%** (Faire Quote: {1/prob_over:.2f})")
-            elif prob_over < 0.47:
-                st.success(f"🔥 **Value auf UNTER {tipico_total}!** Wahrscheinlichkeit: **{(1-prob_over)*100:.1f}%** (Faire Quote: {1/(1-prob_over):.2f})")
-            else:
-                st.info(f"⚪ Linie {tipico_total} ist stabil quotiert ({prob_over*100:.1f}% Über). Kein Value.")
-                
-            if prob_hc_cover > 0.53:
-                st.success(f"🔥 **Value auf Handicap {wnba_home} ({tipico_hc})!** Chance: **{prob_hc_cover*100:.1f}%**")
-            elif prob_hc_cover < 0.47:
-                st.success(f"🔥 **Value auf Handicap {wnba_away} (+{-tipico_hc})!** Chance: **{(1-prob_hc_cover)*100:.1f}%**")
+        if prob_hc_cover > 0.53:
+            st.success(f"🔥 **Value auf Handicap {wnba_home} ({tipico_hc})!** Chance: **{prob_hc_cover*100:.1f}%**")
+        elif prob_hc_cover < 0.47:
+            st.success(f"🔥 **Value auf Handicap {wnba_away} (+{-tipico_hc})!** Chance: **{(1-prob_hc_cover)*100:.1f}%**")
