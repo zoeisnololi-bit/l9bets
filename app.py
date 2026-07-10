@@ -52,7 +52,6 @@ def hole_live_news(team1, team2=None):
 # --- KI INJURY SCANNER (WNBA - ENGLISCH US) ---
 def scanne_wnba_injuries(team):
     try:
-        # Sucht gezielt auf dem US-Markt nach Verletzungsberichten des Teams
         encoded_query = urllib.parse.quote(f"{team} WNBA injury report")
         url = f"https://news.google.com/rss/search?q={encoded_query}&hl=en&gl=US&ceid=US:en"
         
@@ -64,11 +63,10 @@ def scanne_wnba_injuries(team):
         gefundene_meldungen = []
         berechneter_malus = 0.0
         
-        # US-Sportbegriffe für Ausfälle und Zweifel
         harte_ausfaelle = ["out", "injury", "injured", "miss", "missing", "broken", "acl", "surgery", "sidelined"]
         fragliche_ausfaelle = ["questionable", "doubtful", "game-time", "gtd", "status"]
         
-        for item in root.findall('.//item')[:3]: # Checke die Top 3 aktuellen Meldungen
+        for item in root.findall('.//item')[:3]:
             titel_orig = item.find('title').text
             titel_lower = titel_orig.lower()
             link = item.find('link').text
@@ -80,41 +78,78 @@ def scanne_wnba_injuries(team):
                 berechneter_malus += 1.5
                 gefundene_meldungen.append({"titel": titel_orig, "link": link, "typ": "🟡 Fraglich / Einsatz unsicher"})
                 
-        # Schutz-Deckelung bei max 7 Punkten Abzug pro Team
         berechneter_malus = min(berechneter_malus, 7.0)
         return gefundene_meldungen, berechneter_malus
     except:
         return [], 0.0
 
 # --- STREAMLIT CONFIG ---
-st.set_page_config(page_title="L9 Bets v4", page_icon="📈", layout="centered")
+st.set_page_config(page_title="L9 Bets v5", page_icon="📈", layout="centered")
 
 # --- SPORTARTAUSWAHL ---
 sportart = st.sidebar.radio("Sportart wählen", ["⚽ Fußball (Minor Leagues)", "🏀 WNBA Basketball (CSV)"])
 
 # ==============================================================================
-# SÄULE 1: FUSSBALL (POISSON-MODELL + AUTOMATISCHE NEWS)
+# SÄULE 1: FUSSBALL (INTELLIGENTER MULTI-LEAGUE LOADER)
 # ==============================================================================
 if sportart == "⚽ Fußball (Minor Leagues)":
-    st.title("⚽ Tipico Fußball-Analyst (Minor Leagues)")
-    st.markdown("Fokus: Griechenland, Dänemark, Irland, Mexiko, Schweden, Norwegen")
+    st.title("⚽ Tipico Fußball-Analyst (All Leagues Edition)")
 
     @st.cache_data
     def lade_fussball_daten():
+        # Alle CSV-Dateien im Ordner holen außer WNBA
         csv_dateien = [f for f in glob.glob('*.csv') if f != 'wnba_stats.csv']
         if not csv_dateien: return None, None, None
         
         daten_liste = []
         for datei in csv_dateien:
             try:
-                df_temp = pd.read_csv(datei, encoding='utf-8')
-                benoetigte = ['Div', 'HomeTeam', 'AwayTeam', 'FTHG', 'FTAG', 'HTHG', 'HTAG']
-                df_temp = df_temp[[c for c in benoetigte if c in df_temp.columns]]
-                daten_liste.append(df_temp)
-            except: pass
+                # Erkennt automatisch Komma/Semikolon-Trennung
+                df_temp = pd.read_csv(datei, sep=None, engine='python', encoding='utf-8')
+                df_temp.columns = [str(c).strip().upper() for c in df_temp.columns]
+                
+                # Dynamisches Spalten-Mapping für maximale Kompatibilität mit Extra-Leagues
+                div_col = next((c for c in df_temp.columns if c in ['DIV', 'LEAGUE', 'LIGA', 'COUNTRY']), None)
+                home_col = next((c for c in df_temp.columns if c in ['HOMETEAM', 'HOME', 'HEIM']), None)
+                away_col = next((c for c in df_temp.columns if c in ['AWAYTEAM', 'AWAY', 'AUSWAERTS']), None)
+                fthg_col = next((c for c in df_temp.columns if c in ['FTHG', 'HG', 'GOALSHOME', 'HOME_GOALS']), None)
+                ftag_col = next((c for c in df_temp.columns if c in ['FTAG', 'AG', 'GOALSAWAY', 'AWAY_GOALS']), None)
+                hthg_col = next((c for c in df_temp.columns if c in ['HTHG', 'HT_HG']), None)
+                htag_col = next((c for c in df_temp.columns if c in ['HTAG', 'HT_AG']), None)
+                
+                if not all([home_col, away_col, fthg_col, ftag_col]):
+                    continue # Datei überspringen, wenn Basisdaten fehlen
+                    
+                clean_df = pd.DataFrame()
+                
+                # Liga-Name bestimmen (Fallback auf Dateiname, z.B. DNK, SWE, NOR)
+                if div_col:
+                    clean_df['Div'] = df_temp[div_col].astype(str).str.strip()
+                else:
+                    clean_df['Div'] = os.path.splitext(os.path.basename(datei))[0].upper()
+                    
+                clean_df['HomeTeam'] = df_temp[home_col].astype(str).str.strip()
+                clean_df['AwayTeam'] = df_temp[away_col].astype(str).str.strip()
+                clean_df['FTHG'] = pd.to_numeric(df_temp[fthg_col], errors='coerce')
+                clean_df['FTAG'] = pd.to_numeric(df_temp[ftag_col], errors='coerce')
+                
+                # Intelligenter Fallback für fehlende Halbzeitdaten (z.B. in DNK.csv, SWE.csv)
+                if hthg_col:
+                    clean_df['HTHG'] = pd.to_numeric(df_temp[hthg_col], errors='coerce')
+                else:
+                    clean_df['HTHG'] = (clean_df['FTHG'] * 0.42).round() # Schätzung: ca. 42% der Tore fallen in H1
+                    
+                if htag_col:
+                    clean_df['HTAG'] = pd.to_numeric(df_temp[htag_col], errors='coerce')
+                else:
+                    clean_df['HTAG'] = (clean_df['FTAG'] * 0.42).round()
+                    
+                daten_liste.append(clean_df.dropna())
+            except:
+                pass
             
         if not daten_liste: return None, None, None
-        df_gesamt = pd.concat(daten_liste, ignore_index=True).dropna()
+        df_gesamt = pd.concat(daten_liste, ignore_index=True)
         
         liga_daten = {}
         alle_ligen = df_gesamt['Div'].unique()
@@ -144,8 +179,12 @@ if sportart == "⚽ Fußball (Minor Leagues)":
 
     df_gesamt, liga_daten, alle_teams = lade_fussball_daten()
     if df_gesamt is None:
-        st.error("❌ Keine Fußball-CSV-Dateien im Ordner gefunden!")
+        st.error("❌ Keine auswertbaren Fußball-CSV-Dateien gefunden!")
         st.stop()
+
+    # Übersicht geladener Ligen anzeigen
+    ligen_liste = list(liga_daten.keys())
+    st.caption(f"Loaded Leagues: {', '.join(ligen_liste)}")
 
     col1, col2 = st.columns(2)
     with col1: home_team = st.selectbox("Heimteam", alle_teams)
@@ -268,11 +307,9 @@ else:
     with col1: wnba_home = st.selectbox("Heimteam (WNBA)", teams_list, index=0)
     with col2: wnba_away = st.selectbox("Auswärtsteam (WNBA)", teams_list, index=1 if len(teams_list) > 1 else 0)
 
-    # --- AUTOMATISCHER SCAN-PROZESS IM HINTERGRUND ---
     news_home, auto_malus_home = scanne_wnba_injuries(wnba_home)
     news_away, auto_malus_away = scanne_wnba_injuries(wnba_away)
 
-    # --- INTERAKTIVES VERLETZUNGS-MENÜ MIT KI-VORSCHLAG ---
     with st.expander("🚨 KI-Verletzungs-Scanner & News (Live US-Märkte)", expanded=True):
         st.write("Die KI scannt US-Quellen automatisch nach verletzten Spielerinnen und schlägt Anpassungen vor:")
         
@@ -328,7 +365,6 @@ else:
             exp_pts_home = (total_exp / 2) + (diff_exp / 2)
             exp_pts_away = (total_exp / 2) - (diff_exp / 2)
 
-        # Abzug der (automatisch eingetragenen oder manuell überschriebenen) Ausfallpunkte
         exp_pts_home -= malus_home
         exp_pts_away -= malus_away
 
