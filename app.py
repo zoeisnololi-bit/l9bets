@@ -123,10 +123,25 @@ else:
     @st.cache_data
     def lade_wnba_daten():
         try:
-            # sep=None & engine='python' erkennt automatisch Komma ODER Semikolon!
+            # 1. Erkennt automatisch, ob Komma (,) oder Semikolon (;) genutzt wurde
             df = pd.read_csv('wnba_stats.csv', sep=None, engine='python', encoding='utf-8')
-            df.columns = df.columns.str.strip() # Entfernt versteckte Leerzeichen in den Spaltenköpfen
-            return df
+            
+            # 2. Entfernt unsichtbare Leerzeichen und macht alles zu Großbuchstaben für den Abgleich
+            spalten_clean = {c.strip().upper(): c for c in df.columns}
+            
+            # 3. Baut ein sauberes DataFrame auf, das exakt die Namen liefert, die das Modell braucht
+            clean_df = pd.DataFrame()
+            if 'TEAM' in spalten_clean: 
+                clean_df['Team'] = df[spalten_clean['TEAM']].astype(str).str.strip()
+            if 'PTS' in spalten_clean: 
+                clean_df['PTS'] = pd.to_numeric(df[spalten_clean['PTS']], errors='coerce')
+            if 'OPP_PTS' in spalten_clean: 
+                clean_df['OPP_PTS'] = pd.to_numeric(df[spalten_clean['OPP_PTS']], errors='coerce')
+            if 'PACE' in spalten_clean: 
+                clean_df['PACE'] = pd.to_numeric(df[spalten_clean['PACE']], errors='coerce')
+            
+            # 4. Schmeißt fehlerhafte Zeilen raus und gibt die sauberen Daten zurück
+            return clean_df.dropna()
         except:
             return None
             
