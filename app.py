@@ -3,6 +3,7 @@ import pandas as pd
 import glob
 from scipy.stats import poisson, norm
 import warnings
+import os
 warnings.filterwarnings('ignore')
 
 # --- CONFIG ---
@@ -57,7 +58,7 @@ if sportart == "⚽ Fußball (Minor Leagues)":
                     'HT_HA': (home['HTHG'].mean() / avg_hthg) if avg_hthg > 0 else 1,
                     'HT_HD': (home['HTAG'].mean() / avg_htag) if avg_htag > 0 else 1,
                     'HT_AA': (away['HTAG'].mean() / avg_htag) if avg_htag > 0 else 1,
-                    'HT_AD': (away['HTHG'].mean() / avg_hthg) if avg_hthg > 0 else 1,
+                    'HT_AD': (away['HTHG'].mean() / avg_htag) if avg_htag > 0 else 1,
                 }
             liga_daten[liga] = {'avg_fthg': avg_fthg, 'avg_ftag': avg_ftag, 'avg_hthg': avg_hthg, 'avg_htag': avg_htag, 'team_stats': team_stats}
         return df_gesamt, liga_daten, alle_teams
@@ -122,35 +123,52 @@ else:
 
     @st.cache_data
     def lade_wnba_daten():
+        if not os.path.exists('wnba_stats.csv'):
+            return "FEHLT"
         try:
-            # 1. Erkennt automatisch, ob Komma (,) oder Semikolon (;) genutzt wurde
+            # Erkennt automatisch Trennzeichen (Komma oder Semikolon)
             df = pd.read_csv('wnba_stats.csv', sep=None, engine='python', encoding='utf-8')
             
-            # 2. Entfernt unsichtbare Leerzeichen und macht alles zu Großbuchstaben für den Abgleich
-            spalten_clean = {c.strip().upper(): c for c in df.columns}
+            # Bereinigt Spaltennamen (Großbuchstaben & ohne Leerzeichen)
+            df.columns = [str(c).strip().upper() for c in df.columns]
             
-            # 3. Baut ein sauberes DataFrame auf, das exakt die Namen liefert, die das Modell braucht
+            # Intelligentes Mapping für fehlerhafte Spaltennamen
+            team_col = next((c for c in df.columns if c in ['TEAM', 'TEAM_NAME', 'NAME', 'MANNSCHAFT']), None)
+            pts_col = next((c for c in df.columns if c in ['PTS', 'POINTS', 'PUNKTE', 'PPG']), None)
+            opp_col = next((c for c in df.columns if c in ['OPP_PTS', 'OPP_POINTS', 'GEGNER_PUNKTE', 'OPPTS']), None)
+            pace_col = next((c for c in df.columns if c in ['PACE', 'SPEED', 'GESCHWINDIGKEIT']), None)
+            
+            if not all([team_col, pts_col, opp_col, pace_col]):
+                return "SPALTEN_FEHLER"
+                
             clean_df = pd.DataFrame()
-            if 'TEAM' in spalten_clean: 
-                clean_df['Team'] = df[spalten_clean['TEAM']].astype(str).str.strip()
-            if 'PTS' in spalten_clean: 
-                clean_df['PTS'] = pd.to_numeric(df[spalten_clean['PTS']], errors='coerce')
-            if 'OPP_PTS' in spalten_clean: 
-                clean_df['OPP_PTS'] = pd.to_numeric(df[spalten_clean['OPP_PTS']], errors='coerce')
-            if 'PACE' in spalten_clean: 
-                clean_df['PACE'] = pd.to_numeric(df[spalten_clean['PACE']], errors='coerce')
+            clean_df['Team'] = df[team_col].astype(str).str.strip()
+            clean_df['PTS'] = pd.to_numeric(df[pts_col], errors='coerce')
+            clean_df['OPP_PTS'] = pd.to_numeric(df[opp_col], errors='coerce')
+            clean_df['PACE'] = pd.to_numeric(df[pace_col], errors='coerce')
             
-            # 4. Schmeißt fehlerhafte Zeilen raus und gibt die sauberen Daten zurück
             return clean_df.dropna()
-        except:
-            return None
-            
+        except Exception as e:
+            return f"ERROR: {str(e)}"
+
     wnba_df = lade_wnba_daten()
 
-    if wnba_df is None:
-        st.error("❌ Datei `wnba_stats.csv` wurde im Repository nicht gefunden!")
-        st.info("Bitte erstelle eine Datei namens `wnba_stats.csv` mit den Spalten: Team, PTS, OPP_PTS, PACE")
+    # Fehlerbehandlung statt rohem Absturz
+    if isinstance(wnba_df, str):
+        if wnba_df == "FEHLT":
+            st.error("❌ Die Datei `wnba_stats.csv` wurde in deinem Repository nicht gefunden!")
+            st.info("Bitte erstelle eine Datei namens `wnba_stats.csv` auf GitHub.")
+        elif wnba_df == "SPALTEN_FEHLER":
+            st.error("❌ Spalten-Konflikt! Die Spaltennamen in deiner CSV sind ungültig.")
+            st.info("Bitte stelle sicher, dass die erste Zeile deiner CSV exakt so heißt:\n`Team,PTS,OPP_PTS,PACE`")
+        else:
+            st.error(f"❌ Unbekannter Ladefehler: {wnba_df}")
         st.stop()
+    
+    elif wnba_df.empty:
+        st.error("❌ Die `wnba_stats.csv` wurde geladen, enthält aber keine auswertbaren Daten.")
+        st.stop()
+        
     else:
         teams_list = sorted(wnba_df['Team'].tolist())
 
@@ -162,7 +180,7 @@ else:
         st.write("#### Deine Tipico Buchmacher-Lines eintragen:")
         cx, cy = st.columns(2)
         with cx: tipico_total = st.number_input("Tipico Over/Under Linie (z.B. 162.5)", value=161.5, step=0.5)
-        with cy: tipico_hc = st.number_input("Handicap Linie fürs Heimteam (z.B. -4.5)", value=-3.5, step=0.5)
+        with cy: tipico_hc = st.number_input("Handicap Linie fürs Heimteam (z.B. -3.5)", value=-3.5, step=0.5)
 
         if st.button("🏀 WNBA Value berechnen", use_container_width=True):
             avg_pts = wnba_df['PTS'].mean()
@@ -171,28 +189,26 @@ else:
             t_home = wnba_df[wnba_df['Team'] == wnba_home].iloc[0]
             t_away = wnba_df[wnba_df['Team'] == wnba_away].iloc[0]
             
-            # Erwartete Pace (Spielgeschwindigkeit)
+            # Erwartete Pace
             exp_pace = (t_home['PACE'] * t_away['PACE']) / avg_pace
             
-            # Offensiv- & Defensiv-Effizienz berechnen
+            # Effizienzen
             home_off = t_home['PTS'] / t_home['PACE']
             home_def = t_home['OPP_PTS'] / t_home['PACE']
             away_off = t_away['PTS'] / t_away['PACE']
             away_def = t_away['OPP_PTS'] / t_away['PACE']
             league_eff = avg_pts / avg_pace
             
-            # Erwartete Punkte werfen
+            # Erwartete Punkte
             exp_pts_home = exp_pace * (home_off * away_def) / league_eff
             exp_pts_away = exp_pace * (away_off * home_def) / league_eff
             
             total_exp = exp_pts_home + exp_pts_away
             diff_exp = exp_pts_home - exp_pts_away
             
-            # Mathematische Standardabweichung (WNBA Metrik)
             sigma_spread = 10.5
             sigma_total = 14.0
             
-            # Wahrscheinlichkeiten via Gauß-Glockenkurve
             prob_home_win = norm.sf(0, loc=diff_exp, scale=sigma_spread)
             prob_over = norm.sf(tipico_total, loc=total_exp, scale=sigma_total)
             prob_hc_cover = norm.sf(-tipico_hc, loc=diff_exp, scale=sigma_spread)
