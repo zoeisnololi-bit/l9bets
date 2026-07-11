@@ -95,13 +95,13 @@ def scanne_wnba_injuries(team):
         return [], 0.0
 
 # --- STREAMLIT CONFIG ---
-st.set_page_config(page_title="L9 Bets", page_icon="📈", layout="centered")
+st.set_page_config(page_title="L9 Bets Beta", page_icon="📈", layout="centered")
 
 # --- SPORTARTAUSWAHL ---
 sportart = st.sidebar.radio("Sportart wählen", ["⚽ Fußball (Minor Leagues)", "🏀 WNBA Basketball (CSV)"])
 
 # ==============================================================================
-# SÄULE 1: FUSSBALL (VOLLZEIT, HALBZEIT, DOPPELTE CHANCE, HANDICAP)
+# SÄULE 1: FUSSBALL (INKLUSIVE AUTOMATISCHER FAIREN QUOTE)
 # ==============================================================================
 if sportart == "⚽ Fußball (Minor Leagues)":
     st.title("⚽ Tipico Fußball-Analyst Pro")
@@ -191,7 +191,6 @@ if sportart == "⚽ Fußball (Minor Leagues)":
     with col1: home_team = st.selectbox("Heimteam", alle_teams)
     with col2: away_team = st.selectbox("Auswärtsteam", alle_teams)
 
-    # --- HANDICAP INPUT FÜR FUSSBALL ---
     fb_hc_str = st.text_input("Fußball Handicap-Format (z.B. 0:1, 1:0, 0:-1.5)", value="0:1")
 
     if st.button("🚀 Fußball Komplettprognose", use_container_width=True):
@@ -209,7 +208,6 @@ if sportart == "⚽ Fußball (Minor Leagues)":
             
             sh_home_xg, sh_away_xg = max(0.01, ft_home_xg - ht_home_xg), max(0.01, ft_away_xg - ht_away_xg)
             
-            # Counter Variablen initialisieren
             home_win, draw, away_win = 0, 0, 0
             ht_home_win, ht_draw, ht_away_win = 0, 0, 0
             hc_home_win, hc_draw, hc_away_win = 0, 0, 0
@@ -217,29 +215,26 @@ if sportart == "⚽ Fußball (Minor Leagues)":
             
             hc_home_bonus, hc_away_bonus = parse_handicap(fb_hc_str)
             
-            for i in range(6): # HT Heim
+            for i in range(6):
                 p_ht_h = poisson_pmf(i, ht_home_xg)
-                for j in range(6): # HT Auswärts
+                for j in range(6):
                     p_ht = p_ht_h * poisson_pmf(j, ht_away_xg)
                     
-                    # Halbzeit Ergebnisse addieren
                     if i > j: ht_home_win += p_ht
                     elif i == j: ht_draw += p_ht
                     else: ht_away_win += p_ht
                     
-                    for k in range(6): # SH Heim
+                    for k in range(6):
                         p_sh_h = poisson_pmf(k, sh_home_xg)
-                        for l in range(6): # SH Auswärts
+                        for l in range(6):
                             p_full = p_ht * p_sh_h * poisson_pmf(l, sh_away_xg)
                             
-                            f_h, f_a = i + k, j + l # Endstand
+                            f_h, f_a = i + k, j + l
                             
-                            # Reguläre Vollzeit
                             if f_h > f_a: home_win += p_full
                             elif f_h == f_a: draw += p_full
                             else: away_win += p_full
                             
-                            # Handicap Vollzeit-Berechnung
                             v_h = f_h + hc_home_bonus
                             v_a = f_a + hc_away_bonus
                             if abs(v_h - v_a) < 1e-5: hc_draw += p_full
@@ -251,43 +246,46 @@ if sportart == "⚽ Fußball (Minor Leagues)":
 
             st.divider()
             
+            # Helper für Division-Safe faire Quote
+            def fq(p): return f"Fair: {1/max(0.0001, p):.2f}"
+            
             # 1. Vollzeit 3-Way & Doppelte Chance
             st.subheader(f"📊 Vollzeit-Prognose ({aktuelle_liga})")
             c1, c2, c3 = st.columns(3)
-            c1.metric("Sieg 1", f"{home_win*100:.1f}%")
-            c2.metric("Remis X", f"{draw*100:.1f}%")
-            c3.metric("Sieg 2", f"{away_win*100:.1f}%")
+            c1.metric("Sieg 1", f"{home_win*100:.1f}%", fq(home_win))
+            c2.metric("Remis X", f"{draw*100:.1f}%", fq(draw))
+            c3.metric("Sieg 2", f"{away_win*100:.1f}%", fq(away_win))
             
             st.markdown("**Doppelte Chance:**")
             dc1, dc2, dc3 = st.columns(3)
-            dc1.metric("1X (Heim oder Remis)", f"{(home_win + draw)*100:.1f}%")
-            dc2.metric("12 (Kein Remis)", f"{(home_win + away_win)*100:.1f}%")
-            dc3.metric("X2 (Remis oder Auswärts)", f"{(draw + away_win)*100:.1f}%")
+            dc1.metric("1X (Heim oder Remis)", f"{(home_win + draw)*100:.1f}%", fq(home_win + draw))
+            dc2.metric("12 (Kein Remis)", f"{(home_win + away_win)*100:.1f}%", fq(home_win + away_win))
+            dc3.metric("X2 (Remis oder Auswärts)", f"{(draw + away_win)*100:.1f}%", fq(draw + away_win))
             
             # 2. Halbzeit-Prognosen
             st.write("---")
             st.subheader("⏱️ Halbzeit-Prognose (1. Halbzeit)")
             hc1, hc2, hc3 = st.columns(3)
-            hc1.metric("HT Sieg 1", f"{ht_home_win*100:.1f}%")
-            hc2.metric("HT Remis X", f"{ht_draw*100:.1f}%")
-            hc3.metric("HT Sieg 2", f"{ht_away_win*100:.1f}%")
+            hc1.metric("HT Sieg 1", f"{ht_home_win*100:.1f}%", fq(ht_home_win))
+            hc2.metric("HT Remis X", f"{ht_draw*100:.1f}%", fq(ht_draw))
+            hc3.metric("HT Sieg 2", f"{ht_away_win*100:.1f}%", fq(ht_away_win))
             
-            # 3. Dynamisches Format Handicap
+            # 3. Handicap Prognose
             st.write("---")
             st.subheader(f"🎯 Handicap-Prognose (Format: {fb_hc_str})")
             hcc1, hcc2, hcc3 = st.columns(3)
-            hcc1.metric("HC Sieg 1", f"{hc_home_win*100:.1f}%")
-            if hc_draw > 0.005: # Nur anzeigen, wenn es kein asiatisches halbes Handicap ist
-                hcc2.metric("HC Remis X", f"{hc_draw*100:.1f}%")
+            hcc1.metric("HC Sieg 1", f"{hc_home_win*100:.1f}%", fq(hc_home_win))
+            if hc_draw > 0.005:
+                hcc2.metric("HC Remis X", f"{hc_draw*100:.1f}%", fq(hc_draw))
             else:
-                hcc2.metric("HC Remis X", "0.0% (2-Way)")
-            hcc3.metric("HC Sieg 2", f"{hc_away_win*100:.1f}%")
+                hcc2.metric("HC Remis X", "0.0% (2-Way)", "Fair: N/A")
+            hcc3.metric("HC Sieg 2", f"{hc_away_win*100:.1f}%", fq(hc_away_win))
 
             # Tore Märkte
             st.write("---")
             c4, c5 = st.columns(2)
-            c4.metric("Über 2.5 Tore", f"{over25*100:.1f}%")
-            c5.metric("Beide treffen (BTTS)", f"{btts_yes*100:.1f}%")
+            c4.metric("Über 2.5 Tore", f"{over25*100:.1f}%", fq(over25))
+            c5.metric("Beide treffen (BTTS)", f"{btts_yes*100:.1f}%", fq(btts_yes))
             
             st.write("---")
             st.write("📰 **Live-News für dieses Match:**")
@@ -297,7 +295,7 @@ if sportart == "⚽ Fußball (Minor Leagues)":
             else: st.caption("Keine News im Feed.")
 
 # ==============================================================================
-# SÄULE 2: WNBA BASKETBALL (INTELLIGENTES NEUES HANDICAP FORMAT)
+# SÄULE 2: WNBA BASKETBALL
 # ==============================================================================
 else:
     st.title("🏀 WNBA Buchmacher-Analyst (KI-Injury Update)")
@@ -385,9 +383,7 @@ else:
         
         sigma_spread, sigma_total = 10.5, 14.0
         
-        # Handicap mathematisch verarbeiten aus dem String
         hc_h_bonus, hc_a_bonus = parse_handicap(wnba_hc_str)
-        # Netto-Hürde für das Heimteam:
         netto_hc_hurde = hc_a_bonus - hc_h_bonus
         
         prob_home_win = norm_sf(0, diff_exp, sigma_spread)
@@ -399,14 +395,14 @@ else:
         st.caption(f"Erwarteter Endstand: **{exp_pts_home:.1f} : {exp_pts_away:.1f}** (Gesamtpunkte: {total_exp:.1f})")
         
         c1, c2 = st.columns(2)
-        c1.metric("Siegchance Heim (ML)", f"{prob_home_win*100:.1f}%")
-        c2.metric("Siegchance Auswärts (ML)", f"{(1-prob_home_win)*100:.1f}%")
+        c1.metric("Siegchance Heim (ML)", f"{prob_home_win*100:.1f}%", f"Fair: {1/max(0.0001, prob_home_win):.2f}")
+        c2.metric("Siegchance Auswärts (ML)", f"{(1-prob_home_win)*100:.1f}%", f"Fair: {1/max(0.0001, 1-prob_home_win):.2f}")
         
         st.write("---")
         if prob_over > 0.53:
-            st.success(f"🔥 **Value auf ÜBER {tipico_total}!** Chance: **{prob_over*100:.1f}%**")
+            st.success(f"🔥 **Value auf ÜBER {tipico_total}!** Chance: **{prob_over*100:.1f}%** (Fair: {1/prob_over:.2f})")
         elif prob_over < 0.47:
-            st.success(f"🔥 **Value auf UNTER {tipico_total}!** Chance: **{(1-prob_over)*100:.1f}%**")
+            st.success(f"🔥 **Value auf UNTER {tipico_total}!** Chance: **{(1-prob_over)*100:.1f}%** (Fair: {1/(1-prob_over):.2f})")
             
         if prob_hc_cover > 0.53:
             st.success(f"🔥 **Value auf Handicap {wnba_home} ({wnba_hc_str})!** Chance: **{prob_hc_cover*100:.1f}%**")
