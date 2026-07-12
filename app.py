@@ -53,7 +53,9 @@ sportart = st.sidebar.radio("Sportart wählen", ["🏀 WNBA (Spread Pro)"])
 st.title("🏀 WNBA Spread & Value Master")
     
 @st.cache_data
-def lade_wnba_daten(): if not os.path.exists('wnba_stats.csv'): return "FEHLT", None
+def lade_wnba_daten(): 
+    if not os.path.exists('wnba_stats.csv'): 
+        return "FEHLT", None
 
     df = pd.read_csv('wnba_stats.csv', encoding='utf-8')
 
