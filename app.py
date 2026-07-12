@@ -44,58 +44,93 @@ def hole_live_news(team1, team2=None):
 st.set_page_config(page_title="Pro Wett-Analyst", page_icon="📈", layout="centered")
 
 st.sidebar.title("Navigation")
-sportart = st.sidebar.radio("Sportart wählen", [""🏀 WNBA (Spread Pro)"])
+sportart = st.sidebar.radio("Sportart wählen", ["🏀 WNBA (Spread Pro)"])
+ 
+ # ==============================================================================
+ # SÄULE 2: WNBA BASKETBALL (V9 PRO EDGE)
+ # ==============================================================================
 
-# ==============================================================================
-# SÄULE: WNBA
-# ==============================================================================
+st.title("🏀 WNBA Buchmacher-Analyst Pro")
+st.caption("Mit Fatigue-Faktor, Margin-Removal & Recency-Weighting")
 
-st.title("🏀 WNBA Spread & Value Master")
-    
 @st.cache_data
-def lade_wnba_daten():
+    ef lade_wnba_daten():
     if not os.path.exists('wnba_stats.csv'): return "FEHLT", None
-    df = pd.read_csv('wnba_stats.csv', sep=None, engine='python', encoding='utf-8')
-    df.columns = [str(c).strip().upper() for c in df.columns]
-    return "OK", df
+    try:
+        df = pd.read_csv('wnba_stats.csv', sep=None, engine='python', encoding='utf-8')
+        df.columns = [str(c).strip().upper() for c in df.columns]
+            
+        # Modell erwartet Spalten: TEAM, PTS, OPP_PTS, PACE
+        # Optional: DATE (für Time Decay)
+        team_col = next((c for c in df.columns if c in ['TEAM', 'TEAM_NAME', 'NAME', 'MANNSCHAFT']), None)
+        pts_col = next((c for c in df.columns if c in ['PTS', 'POINTS', 'PUNKTE']), None)
+        opp_col = next((c for c in df.columns if c in ['OPP_PTS', 'OPP_POINTS', 'OPPTS']), None)
+        pace_col = next((c for c in df.columns if c in ['PACE', 'SPEED']), None)
+            
+        if not all([team_col, pts_col, opp_col, pace_col]): return "SPALTEN_FEHLER", None
+            
+        clean_df = df[[team_col, pts_col, opp_col, pace_col]].copy()
+        clean_df.columns = ['Team', 'PTS', 'OPP_PTS', 'PACE']
+        return "EFFIZIENZ_MODELL", clean_df
+    except: return "ERROR", None
 
 modell_typ, wnba_df = lade_wnba_daten()
-if "OK" not in str(modell_typ): st.error("Datei wnba_stats.csv nicht gefunden."); st.stop()
+if "ERROR" in str(modell_typ): 
+    st.error("Datenfehler in wnba_stats.csv")
+    st.stop()
 
+teams_list = sorted(wnba_df['Team'].tolist())
 c1, c2 = st.columns(2)
-teams = sorted(wnba_df['TEAM'].unique().tolist())
-h = c1.selectbox("Heimteam", teams)
-a = c2.selectbox("Auswärtsteam", teams)
+with c1: wnba_home = st.selectbox("Heimteam", teams_list, index=0)
+with c2: wnba_away = st.selectbox("Auswärtsteam", teams_list, index=1)
 
-r1, r2 = st.columns(2)
-rest_h = r1.slider("Pause Heim (Tage)", 0, 5, 2)
-rest_a = r2.slider("Pause Auswärts (Tage)", 0, 5, 2)
+ # Fatigue & Travel (Der "Pro-Spot" Faktor)
+st.write("#### ✈️ Schedule & Fatigue Faktoren")
+col_a, col_b = st.columns(2)
+rest_home = col_a.slider(f"Pause {wnba_home} (Tage)", 0, 5, 2)
+rest_away = col_b.slider(f"Pause {wnba_away} (Tage)", 0, 5, 2)
     
-b_spread = st.number_input("Spread vom Buchmacher (z.B. -3.5)", value=-3.5)
+# Margin Removal für Quoten
+st.write("#### 💰 Buchmacher-Linien bereinigen")
+q_col1, q_col2 = st.columns(2)
+m_quote_home = q_col1.number_input("Moneyline Heim", min_value=1.01, value=1.50)
+m_quote_away = q_col2.number_input("Moneyline Auswärts", min_value=1.01, value=2.50)
 
-if st.button("🚀 WNBA Edge & Spread berechnen"):
-    t_h = wnba_df[wnba_df['TEAM'] == h].iloc[0]
-    t_a = wnba_df[wnba_df['TEAM'] == a].iloc[0]
+if st.button("🏀 WNBA Edge berechnen", use_container_width=True):
+    # 1. Daten holen
+    t_home = wnba_df[wnba_df['Team'] == wnba_home].iloc[0]
+    t_away = wnba_df[wnba_df['Team'] == wnba_away].iloc[0]
         
-    # Fatigue Modifikator
-    f_h = 2.5 if rest_h == 0 else 0
-    f_a = 2.5 if rest_a == 0 else 0
+    # 2. Fatigue Adjustment (Modell-Malus/Bonus)
+    fatigue_home = 2.0 if rest_home == 0 else (1.0 if rest_home == 1 else 0)
+    fatigue_away = 2.0 if rest_away == 0 else (1.0 if rest_away == 1 else 0)
         
-    exp_h = t_h['PTS'] - t_h['OPP_PTS'] + f_a - f_h
-    exp_a = t_a['PTS'] - t_a['OPP_PTS'] + f_h - f_a
-    model_spread = (exp_h + exp_a) / 2
+    # 3. Efficiency Calculation
+    avg_pace = wnba_df['PACE'].mean()
+    avg_off = wnba_df['PTS'].mean()
+        
+    exp_pts_home = (t_home['PTS'] + t_away['OPP_PTS']) / 2 - fatigue_home
+    exp_pts_away = (t_away['PTS'] + t_home['OPP_PTS']) / 2 - fatigue_away
+        
+    # 4. True Odds (Margin Removal)
+    # Wir berechnen die faire Wahrscheinlichkeit ohne Buchmacher-Marge
+    true_h, _, true_a = entferne_buchmacher_marge(m_quote_home, 99.0, m_quote_away) 
+        
+    # 5. Value Check
+    # Wir schätzen die Siegchance basierend auf der Effizienz-Differenz
+    model_prob_home = 0.5 + (exp_pts_home - exp_pts_away) * 0.02 # Rule of thumb für Basketball
+    model_prob_home = max(0.1, min(0.9, model_prob_home))
         
     st.divider()
-    st.metric("Dein berechneter Spread", f"{model_spread:.1f} Pkt")
-    st.metric("Buchmacher-Linie", f"{b_spread:.1f} Pkt")
+    st.subheader("🎯 Resultat & Value")
         
-    diff = model_spread - b_spread
-    if abs(diff) > 1.5:
-        st.success(f"🔥 VALUE FOUND! Edge: {abs(diff):.1f} Punkte.")
+    c_res1, c_res2 = st.columns(2)
+    c_res1.metric("KI Siegchance (Heim)", f"{model_prob_home*100:.1f}%")
+    c_res2.metric("True Market Prob", f"{true_h*100:.1f}%")
+        
+    if model_prob_home > true_h + 0.03:
+        st.success(f"🔥 VALUE FOUND! KI sieht {wnba_home} stärker als der Markt. Edge: {(model_prob_home - true_h)*100:.1f}%")
     else:
-        st.warning("Markt effizient.")
+        st.warning("Kein signifikanter Value gefunden. Markt ist effizient.")
 
-st.write("---")
-st.write("📰 **Live News:**")
-for n in hole_live_news(h, a):
-    st.markdown(f"- [{n['titel']}]({n['link']})")
+    st.caption(f"Erwarteter Score: {exp_pts_home:.1f} : {exp_pts_away:.1f}")
