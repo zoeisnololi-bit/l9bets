@@ -47,41 +47,46 @@ st.sidebar.title("Navigation")
 sportart = st.sidebar.radio("Sportart wählen", ["🏀 WNBA (Spread Pro)"])
 
 # ==============================================================================
-# SÄULE: WNBA
+# SÄULE: WNBA (KORRIGIERTES LADEN)
 # ==============================================================================
-
 st.title("🏀 WNBA Spread & Value Master")
-    
+
 @st.cache_data
-def lade_wnba_daten(): 
-    if not os.path.exists('wnba_stats.csv'): 
-        return "FEHLT", None
+def lade_wnba_daten():
+    # Debug: Zeige aktuelles Verzeichnis an, damit du sicher bist
+    # st.write(f"Suche Datei in: {os.getcwd()}") 
+    
+    if not os.path.exists('wnba_stats.csv'):
+        return None, f"Datei 'wnba_stats.csv' wurde nicht gefunden. (Dateien im Ordner: {os.listdir()})"
 
-    df = pd.read_csv('wnba_stats.csv', encoding='utf-8')
+    try:
+        df = pd.read_csv('wnba_stats.csv', encoding='utf-8')
+        df.columns = [str(c).strip().upper() for c in df.columns]
+        
+        # Validierung
+        erforderliche_spalten = ['TEAM', 'PTS', 'TRB', 'STL', 'BLK']
+        fehlend = [c for c in erforderliche_spalten if c not in df.columns]
+        if fehlend:
+            return None, f"Fehlende Spalten in CSV: {fehlend}"
 
-    df.columns = [str(c).strip().upper() for c in df.columns]
+        # Defensiv-Rating schätzen
+        league_pts = df['PTS'].mean()
+        defense_factor = (
+            0.4 * (df['TRB'] - df['TRB'].mean()) +
+            0.3 * (df['STL'] - df['STL'].mean()) +
+            0.3 * (df['BLK'] - df['BLK'].mean())
+        )
+        df['OPP_PTS'] = league_pts - defense_factor
+        return df, None
+    except Exception as e:
+        return None, f"Fehler beim Einlesen: {e}"
 
-    erforderliche_spalten = ['TEAM', 'PTS']
-    fehlend = [c for c in erforderliche_spalten if c not in df.columns]
+# --- HIER WIRD AUFGERUFEN ---
+wnba_df, error_msg = lade_wnba_daten()
 
-    if fehlend:
-        return None, f"Fehlende Spalten: {fehlend}"
-
-    # Defensiv-Rating schätzen
-    league_pts = df['PTS'].mean()
-
-    defense_factor = (
-        0.4 * (df['TRB'] - df['TRB'].mean()) +
-        0.3 * (df['STL'] - df['STL'].mean()) +
-        0.3 * (df['BLK'] - df['BLK'].mean())
-    )
-
-    df['OPP_PTS'] = league_pts - defense_factor
-
-    return df, None
-
-modell_typ, wnba_df = lade_wnba_daten()
-if "OK" not in str(modell_typ): st.error("Datei wnba_stats.csv nicht gefunden."); st.stop()
+if error_msg:
+    st.error(error_msg)
+    st.stop() # Stoppt die App, wenn die Datei nicht da ist
 
 c1, c2 = st.columns(2)
 teams = sorted(wnba_df['TEAM'].unique().tolist())
