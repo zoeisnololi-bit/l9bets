@@ -44,7 +44,7 @@ def hole_live_news(team1, team2=None):
 st.set_page_config(page_title="Pro Wett-Analyst", page_icon="📈", layout="centered")
 
 st.sidebar.title("Navigation")
-sportart = st.sidebar.radio("Sportart wählen", ["⚽ Fußball (xG Pro)", "🏀 WNBA (Spread Pro)"])
+sportart = st.sidebar.radio("Sportart wählen", [""🏀 WNBA (Spread Pro)"])
 
 # ==============================================================================
 # SÄULE: WNBA
