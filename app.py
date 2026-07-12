@@ -14,30 +14,21 @@ def lade_wnba_daten():
     if not os.path.exists('wnba_stats.csv'):
         return None, "Datei 'wnba_stats.csv' nicht gefunden."
     
-    df = pd.read_csv('wnba_stats.csv', sep=None, engine='python', encoding='utf-8')
+    # Einlesen der neuen CSV
+    df = pd.read_csv('wnba_stats.csv', encoding='utf-8')
+    
+    # Wir machen alle Spaltennamen groß, um Fehler zu vermeiden
     df.columns = [str(c).strip().upper() for c in df.columns]
     
-    # Mapping für unterschiedliche Spalten-Benennungen
-    mapping = {
-        'TEAM': ['TEAM', 'TEAM_NAME', 'NAME', 'MANNSCHAFT'],
-        'PTS': ['PTS', 'POINTS', 'PUNKTE', 'SCORE'],
-        'OPP_PTS': ['OPP_PTS', 'OPP_POINTS', 'OPP_SCORE', 'ALLOWED'],
-        'PACE': ['PACE', 'SPEED', 'POSSESSIONS']
-    }
+    # Sicherstellen, dass die wichtigsten Spalten für das Modell da sind
+    # Die Tabelle aus 444.PNG hat 'TEAM' und 'PTS'
+    if 'TEAM' not in df.columns or 'PTS' not in df.columns:
+        return None, f"Fehlende Spalten! Gefunden: {list(df.columns)}"
     
-    # Spalten umbenennen, falls möglich
-    new_cols = {}
-    for standard, variations in mapping.items():
-        for col in df.columns:
-            if col in variations:
-                new_cols[col] = standard
-    
-    df = df.rename(columns=new_cols)
-    
-    # Check ob die wichtigen Spalten existieren
-    missing = [c for c in ['TEAM', 'PTS', 'OPP_PTS'] if c not in df.columns]
-    if missing:
-        return None, f"Fehlende Spalten in CSV: {missing}. Gefundene Spalten: {list(df.columns)}"
+    # Wir fügen eine "Opponent PTS" Schätzung hinzu (da die Tabelle nur Team-Points hat)
+    # Da wir keine direkten Opponent-Stats haben, nutzen wir 
+    # den Durchschnitt der Liga als Proxy für die Defensive-Stärke
+    df['OPP_PTS'] = df['PTS'].mean() 
     
     return df, None
 
