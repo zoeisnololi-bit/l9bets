@@ -123,11 +123,27 @@ else:
     st.title("🏀 WNBA Spread & Value Master")
     
     @st.cache_data
-    def lade_wnba_daten():
-        if not os.path.exists('wnba_stats.csv'): return "FEHLT", None
-        df = pd.read_csv('wnba_stats.csv', sep=None, engine='python', encoding='utf-8')
-        df.columns = [str(c).strip().upper() for c in df.columns]
-        return "OK", df
+def lade_wnba_daten():
+    if not os.path.exists('wnba_stats.csv'):
+        return None, "Datei 'wnba_stats.csv' nicht gefunden."
+    
+    # Einlesen der neuen CSV
+    df = pd.read_csv('wnba_stats.csv', encoding='utf-8')
+    
+    # Wir machen alle Spaltennamen groß, um Fehler zu vermeiden
+    df.columns = [str(c).strip().upper() for c in df.columns]
+    
+    # Sicherstellen, dass die wichtigsten Spalten für das Modell da sind
+    # Die Tabelle aus 444.PNG hat 'TEAM' und 'PTS'
+    if 'TEAM' not in df.columns or 'PTS' not in df.columns:
+        return None, f"Fehlende Spalten! Gefunden: {list(df.columns)}"
+    
+    # Wir fügen eine "Opponent PTS" Schätzung hinzu (da die Tabelle nur Team-Points hat)
+    # Da wir keine direkten Opponent-Stats haben, nutzen wir 
+    # den Durchschnitt der Liga als Proxy für die Defensive-Stärke
+    df['OPP_PTS'] = df['PTS'].mean() 
+    
+    return df, None
 
     modell_typ, wnba_df = lade_wnba_daten()
     if "OK" not in str(modell_typ): st.error("Datei wnba_stats.csv nicht gefunden."); st.stop()
