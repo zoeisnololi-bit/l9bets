@@ -54,7 +54,7 @@ st.title("🏀 WNBA Buchmacher-Analyst Pro")
 st.caption("Mit Fatigue-Faktor, Margin-Removal & Recency-Weighting")
 
 @st.cache_data
-    ef lade_wnba_daten():
+def lade_wnba_daten():
     if not os.path.exists('wnba_stats.csv'): return "FEHLT", None
     try:
         df = pd.read_csv('wnba_stats.csv', sep=None, engine='python', encoding='utf-8')
