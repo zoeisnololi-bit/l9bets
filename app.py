@@ -191,6 +191,11 @@ if sportart == "⚽ Fußball (Minor Leagues)":
         if not daten_liste: return None, None, None
         df_gesamt = pd.concat(daten_liste, ignore_index=True)
         
+        # Strikte Typen-Konvertierung, um TypeError bei .join() zu verhindern
+        df_gesamt['Div'] = df_gesamt['Div'].astype(str).str.strip()
+        df_gesamt['HomeTeam'] = df_gesamt['HomeTeam'].astype(str).str.strip()
+        df_gesamt['AwayTeam'] = df_gesamt['AwayTeam'].astype(str).str.strip()
+        
         liga_daten = {}
         alle_ligen = df_gesamt['Div'].unique()
         alle_teams = sorted(df_gesamt['HomeTeam'].unique().tolist())
@@ -239,7 +244,8 @@ if sportart == "⚽ Fußball (Minor Leagues)":
         st.error("❌ Keine Fußball-CSVs gefunden!")
         st.stop()
 
-    st.caption(f"Aktive Ligen (Gewichtete Daten): {', '.join(list(liga_daten.keys()))}")
+    # Korrektur: Absicherung durch [str(k) for k in ...] gegen TypeError bei Zahlen im Liga-Namen
+    st.caption(f"Aktive Ligen (Gewichtete Daten): {', '.join([str(k) for k in liga_daten.keys()])}")
 
     col1, col2 = st.columns(2)
     with col1: home_team = st.selectbox("Heimteam", alle_teams)
