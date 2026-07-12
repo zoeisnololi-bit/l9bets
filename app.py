@@ -50,8 +50,7 @@ sportart = st.sidebar.radio("Sportart wählen", ["🏀 WNBA (Spread Pro)"])
 # ==============================================================================
 # SÄULE 2: WNBA
 # ==============================================================================
-else:
-    st.title("🏀 WNBA Spread & Value Master")
+st.title("🏀 WNBA Spread & Value Master")
     
     @st.cache_data
     def lade_wnba_daten():
