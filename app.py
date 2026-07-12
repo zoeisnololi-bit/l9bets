@@ -54,10 +54,31 @@ st.title("🏀 WNBA Spread & Value Master")
     
 @st.cache_data
 def lade_wnba_daten():
-    if not os.path.exists('wnba_stats.csv'): return "FEHLT", None
-    df = pd.read_csv('wnba_stats.csv', sep=None, engine='python', encoding='utf-8')
+    if not os.path.exists('wnba_stats.csv'):
+        return None, "Datei 'wnba_stats.csv' nicht gefunden."
+
+    df = pd.read_csv('wnba_stats.csv', encoding='utf-8')
+
     df.columns = [str(c).strip().upper() for c in df.columns]
-    return "OK", df
+
+    erforderliche_spalten = ['TEAM', 'PTS']
+    fehlend = [c for c in erforderliche_spalten if c not in df.columns]
+
+    if fehlend:
+        return None, f"Fehlende Spalten: {fehlend}"
+
+    # Defensiv-Rating schätzen
+    league_pts = df['PTS'].mean()
+
+    defense_factor = (
+        0.4 * (df['TRB'] - df['TRB'].mean()) +
+        0.3 * (df['STL'] - df['STL'].mean()) +
+        0.3 * (df['BLK'] - df['BLK'].mean())
+    )
+
+    df['OPP_PTS'] = league_pts - defense_factor
+
+    return df, None
 
 modell_typ, wnba_df = lade_wnba_daten()
 if "OK" not in str(modell_typ): st.error("Datei wnba_stats.csv nicht gefunden."); st.stop()
@@ -68,8 +89,8 @@ h = c1.selectbox("Heimteam", teams)
 a = c2.selectbox("Auswärtsteam", teams)
 
 r1, r2 = st.columns(2)
-rest_h = r1.slider("Pause Heim (Tage)", 0, 5, 2)
-rest_a = r2.slider("Pause Auswärts (Tage)", 0, 5, 2)
+rest_h = r1.slider("Pause Heim (Tage)", 0, 10, 2)
+rest_a = r2.slider("Pause Auswärts (Tage)", 0, 10, 2)
     
 b_spread = st.number_input("Spread vom Buchmacher (z.B. -3.5)", value=-3.5)
 
