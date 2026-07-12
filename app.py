@@ -47,125 +47,55 @@ st.sidebar.title("Navigation")
 sportart = st.sidebar.radio("Sportart wählen", ["⚽ Fußball (xG Pro)", "🏀 WNBA (Spread Pro)"])
 
 # ==============================================================================
-# SÄULE 1: FUSSBALL
+# SÄULE: WNBA
 # ==============================================================================
-if sportart == "⚽ Fußball (xG Pro)":
-    st.title("⚽ Tipico Analyst Pro (xG & Edge)")
+
+st.title("🏀 WNBA Spread & Value Master")
     
-    @st.cache_data
-    def lade_fussball_daten():
-        csv_dateien = [f for f in glob.glob('*.csv') if f != 'wnba_stats.csv']
-        if not csv_dateien: return None, None, None
-        
-        daten_liste = []
-        heute = pd.Timestamp(datetime.date.today())
-        
-        for datei in csv_dateien:
-            try:
-                df = pd.read_csv(datei, sep=None, engine='python', encoding='utf-8')
-                df.columns = [str(c).strip().upper() for c in df.columns]
-                # Spalten mappen
-                d = {'DIV': 'DIV', 'HOME': 'HOMETEAM', 'AWAY': 'AWAYTEAM', 'FTHG': 'FTHG', 'FTAG': 'FTAG'}
-                
-                # Einfache Validierung
-                if 'HOMETEAM' not in df.columns or 'FTHG' not in df.columns: continue
-                
-                # Torschüsse (Fallback)
-                hst = df['HST'] if 'HST' in df.columns else df['FTHG'] * 2.5
-                ast = df['AST'] if 'AST' in df.columns else df['FTAG'] * 2.5
-                
-                clean = pd.DataFrame({'Div': df.get('DIV', 'Unknown'), 'HomeTeam': df['HOMETEAM'], 'AwayTeam': df['AWAYTEAM'],
-                                      'FTHG': pd.to_numeric(df['FTHG']), 'FTAG': pd.to_numeric(df['FTAG']),
-                                      'HST': pd.to_numeric(hst), 'AST': pd.to_numeric(ast), 'Weight': 1.0})
-                daten_liste.append(clean)
-            except: pass
-        
-        df_gesamt = pd.concat(daten_liste, ignore_index=True)
-        liga_daten = {}
-        for liga in df_gesamt['Div'].unique():
-            df_l = df_gesamt[df_gesamt['Div'] == liga]
-            avg_fthg, avg_ftag = df_l['FTHG'].mean(), df_l['FTAG'].mean()
-            team_stats = {}
-            for t in df_l['HomeTeam'].unique():
-                h = df_l[df_l['HomeTeam'] == t]
-                a = df_l[df_l['AwayTeam'] == t]
-                team_stats[t] = {
-                    'FT_HA': h['FTHG'].mean() / avg_fthg, 'FT_HD': h['FTAG'].mean() / avg_ftag,
-                    'FT_AA': a['FTAG'].mean() / avg_ftag, 'FT_AD': a['FTHG'].mean() / avg_fthg,
-                    'SOT_HA': h['HST'].mean() / h['HST'].mean(), 'SOT_HD': h['AST'].mean() / a['AST'].mean() # Vereinfacht
-                }
-            liga_daten[liga] = {'avg_fthg': avg_fthg, 'avg_ftag': avg_ftag, 'team_stats': team_stats}
-        return df_gesamt, liga_daten
+@st.cache_data
+def lade_wnba_daten():
+    if not os.path.exists('wnba_stats.csv'): return "FEHLT", None
+    df = pd.read_csv('wnba_stats.csv', sep=None, engine='python', encoding='utf-8')
+    df.columns = [str(c).strip().upper() for c in df.columns]
+    return "OK", df
 
-    df_g, liga_d = lade_fussball_daten()
-    if df_g is None: st.error("Keine Fußball-Daten gefunden."); st.stop()
+modell_typ, wnba_df = lade_wnba_daten()
+if "OK" not in str(modell_typ): st.error("Datei wnba_stats.csv nicht gefunden."); st.stop()
 
-    # UI
-    l_key = st.selectbox("Liga", list(liga_d.keys()))
-    h_team = st.selectbox("Heimteam", sorted(df_g['HomeTeam'].unique()))
-    a_team = st.selectbox("Auswärtsteam", sorted(df_g['AwayTeam'].unique()))
+c1, c2 = st.columns(2)
+teams = sorted(wnba_df['TEAM'].unique().tolist())
+h = c1.selectbox("Heimteam", teams)
+a = c2.selectbox("Auswärtsteam", teams)
+
+r1, r2 = st.columns(2)
+rest_h = r1.slider("Pause Heim (Tage)", 0, 5, 2)
+rest_a = r2.slider("Pause Auswärts (Tage)", 0, 5, 2)
     
-    q1, qx, q2 = st.columns(3)
-    quote_1 = q1.number_input("Quote 1", 1.01, value=2.0)
-    quote_x = qx.number_input("Quote X", 1.01, value=3.4)
-    quote_2 = q2.number_input("Quote 2", 1.01, value=3.5)
+b_spread = st.number_input("Spread vom Buchmacher (z.B. -3.5)", value=-3.5)
 
-    if st.button("🚀 Match analysieren"):
-        st.subheader("Analyseergebnis")
-        true_1, true_x, true_2 = entferne_buchmacher_marge(quote_1, quote_x, quote_2)
-        st.write(f"Fairer Marktanteil (Heim): {true_1*100:.1f}%")
-        st.success("Analysiere Value basierend auf xG-Verhältnis...")
-
-# ==============================================================================
-# SÄULE 2: WNBA
-# ==============================================================================
-else:
-    st.title("🏀 WNBA Spread & Value Master")
-    
-    @st.cache_data
-    def lade_wnba_daten():
-        if not os.path.exists('wnba_stats.csv'): return "FEHLT", None
-        df = pd.read_csv('wnba_stats.csv', sep=None, engine='python', encoding='utf-8')
-        df.columns = [str(c).strip().upper() for c in df.columns]
-        return "OK", df
-
-    modell_typ, wnba_df = lade_wnba_daten()
-    if "OK" not in str(modell_typ): st.error("Datei wnba_stats.csv nicht gefunden."); st.stop()
-
-    c1, c2 = st.columns(2)
-    teams = sorted(wnba_df['TEAM'].unique().tolist())
-    h = c1.selectbox("Heimteam", teams)
-    a = c2.selectbox("Auswärtsteam", teams)
-
-    r1, r2 = st.columns(2)
-    rest_h = r1.slider("Pause Heim (Tage)", 0, 5, 2)
-    rest_a = r2.slider("Pause Auswärts (Tage)", 0, 5, 2)
-    
-    b_spread = st.number_input("Spread vom Buchmacher (z.B. -3.5)", value=-3.5)
-
-    if st.button("🚀 WNBA Edge & Spread berechnen"):
-        t_h = wnba_df[wnba_df['TEAM'] == h].iloc[0]
-        t_a = wnba_df[wnba_df['TEAM'] == a].iloc[0]
+if st.button("🚀 WNBA Edge & Spread berechnen"):
+    t_h = wnba_df[wnba_df['TEAM'] == h].iloc[0]
+    t_a = wnba_df[wnba_df['TEAM'] == a].iloc[0]
         
-        # Fatigue Modifikator
-        f_h = 2.5 if rest_h == 0 else 0
-        f_a = 2.5 if rest_a == 0 else 0
+    # Fatigue Modifikator
+    f_h = 2.5 if rest_h == 0 else 0
+    f_a = 2.5 if rest_a == 0 else 0
         
-        exp_h = t_h['PTS'] - t_h['OPP_PTS'] + f_a - f_h
-        exp_a = t_a['PTS'] - t_a['OPP_PTS'] + f_h - f_a
-        model_spread = (exp_h + exp_a) / 2
+    exp_h = t_h['PTS'] - t_h['OPP_PTS'] + f_a - f_h
+    exp_a = t_a['PTS'] - t_a['OPP_PTS'] + f_h - f_a
+    model_spread = (exp_h + exp_a) / 2
         
-        st.divider()
-        st.metric("Dein berechneter Spread", f"{model_spread:.1f} Pkt")
-        st.metric("Buchmacher-Linie", f"{b_spread:.1f} Pkt")
+    st.divider()
+    st.metric("Dein berechneter Spread", f"{model_spread:.1f} Pkt")
+    st.metric("Buchmacher-Linie", f"{b_spread:.1f} Pkt")
         
-        diff = model_spread - b_spread
-        if abs(diff) > 1.5:
-            st.success(f"🔥 VALUE FOUND! Edge: {abs(diff):.1f} Punkte.")
-        else:
-            st.warning("Markt effizient.")
+    diff = model_spread - b_spread
+    if abs(diff) > 1.5:
+        st.success(f"🔥 VALUE FOUND! Edge: {abs(diff):.1f} Punkte.")
+    else:
+        st.warning("Markt effizient.")
 
-    st.write("---")
-    st.write("📰 **Live News:**")
-    for n in hole_live_news(h, a):
-        st.markdown(f"- [{n['titel']}]({n['link']})")
+st.write("---")
+st.write("📰 **Live News:**")
+for n in hole_live_news(h, a):
+    st.markdown(f"- [{n['titel']}]({n['link']})")
