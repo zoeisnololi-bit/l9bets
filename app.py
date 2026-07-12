@@ -7,10 +7,12 @@ import os
 import urllib.request
 import urllib.parse
 import xml.etree.ElementTree as ET
+import datetime
+import numpy as np
 
 warnings.filterwarnings('ignore')
 
-# --- HILFSFUNKTION: HANDICAP STRING PARSER ---
+# --- HILFSFUNKTIONEN MATHEMATIK & HANDICAP ---
 def parse_handicap(hc_str):
     """Zerlegt Formate wie '0:1', '1:0' oder '0:-1.5' in (Heim_Bonus, Auswaerts_Bonus)"""
     try:
@@ -21,7 +23,6 @@ def parse_handicap(hc_str):
         pass
     return 0.0, 0.0
 
-# --- EIGENE MATHEMATISCHE FUNKTIONEN ---
 def poisson_pmf(k, lamb):
     if lamb <= 0: return 0
     try:
@@ -37,14 +38,52 @@ def norm_sf(x, mu, sigma):
     except:
         return 0.5
 
-# --- LIVE NEWS FETCHER (FUSSBALL - DEUTSCH) ---
+def weighted_avg(values, weights):
+    """Berechnet einen gewichteten Durchschnitt, überspringt NaNs"""
+    mask = ~np.isnan(values) & ~np.isnan(weights)
+    v, w = values[mask], weights[mask]
+    if len(w) == 0 or np.sum(w) == 0:
+        return 0.0
+    return np.average(v, weights=w)
+
+def berechne_match_matrix_dixon_coles(xg_home, xg_away, rho=0.13):
+    """
+    Erstellt eine 6x6 Wahrscheinlichkeitsmatrix mit Dixon-Coles-Korrektur 
+    zur realistischeren Berechnung von Unentschieden (0:0, 1:1, etc.).
+    """
+    matrix = np.zeros((6, 6))
+    
+    # Reine Poisson-Verteilung
+    for i in range(6):
+        for j in range(6):
+            matrix[i, j] = poisson_pmf(i, xg_home) * poisson_pmf(j, xg_away)
+            
+    # Dixon-Coles Korrektur für Low-Scoring Ergebnisse
+    korrektur_00 = 1 - (xg_home * xg_away * rho)
+    korrektur_10 = 1 + (xg_away * rho)
+    korrektur_01 = 1 + (xg_home * rho)
+    korrektur_11 = 1 - rho
+
+    matrix[0, 0] = max(0, matrix[0, 0] * korrektur_00)
+    matrix[1, 0] = max(0, matrix[1, 0] * korrektur_10)
+    matrix[0, 1] = max(0, matrix[0, 1] * korrektur_01)
+    matrix[1, 1] = max(0, matrix[1, 1] * korrektur_11)
+    
+    # Normalisieren, damit die Summe exakt 1.0 (100%) ergibt
+    summe = np.sum(matrix)
+    if summe > 0:
+        matrix = matrix / summe
+    
+    return matrix
+
+# --- LIVE NEWS FETCHER ---
 def hole_live_news(team1, team2=None):
     try:
         suchbegriff = f"{team1} {team2}" if team2 else team1
         encoded_query = urllib.parse.quote(suchbegriff)
         url = f"https://news.google.com/rss/search?q={encoded_query}+sport&hl=de&gl=DE&ceid=DE:de"
         
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         with urllib.request.urlopen(req, timeout=4) as response:
             xml_data = response.read()
             
@@ -53,20 +92,18 @@ def hole_live_news(team1, team2=None):
         for item in root.findall('.//item')[:4]:
             titel = item.find('title').text
             link = item.find('link').text
-            if " - " in titel:
-                titel = titel.rsplit(" - ", 1)[0]
+            if " - " in titel: titel = titel.rsplit(" - ", 1)[0]
             news_liste.append({"titel": titel, "link": link})
         return news_liste
     except:
         return []
 
-# --- KI INJURY SCANNER (WNBA - ENGLISCH US) ---
 def scanne_wnba_injuries(team):
     try:
         encoded_query = urllib.parse.quote(f"{team} WNBA injury report")
         url = f"https://news.google.com/rss/search?q={encoded_query}&hl=en&gl=US&ceid=US:en"
         
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         with urllib.request.urlopen(req, timeout=4) as response:
             xml_data = response.read()
             
@@ -84,27 +121,26 @@ def scanne_wnba_injuries(team):
             
             if any(k in titel_lower for k in harte_ausfaelle):
                 berechneter_malus += 3.0
-                gefundene_meldungen.append({"titel": titel_orig, "link": link, "typ": "🔴 Bestätigter Ausfall / Verletzung"})
+                gefundene_meldungen.append({"titel": titel_orig, "link": link, "typ": "🔴 Bestätigter Ausfall"})
             elif any(k in titel_lower for k in fragliche_ausfaelle):
                 berechneter_malus += 1.5
-                gefundene_meldungen.append({"titel": titel_orig, "link": link, "typ": "🟡 Fraglich / Einsatz unsicher"})
+                gefundene_meldungen.append({"titel": titel_orig, "link": link, "typ": "🟡 Fraglich"})
                 
-        berechneter_malus = min(berechneter_malus, 7.0)
-        return gefundene_meldungen, berechneter_malus
+        return gefundene_meldungen, min(berechneter_malus, 7.0)
     except:
         return [], 0.0
 
 # --- STREAMLIT CONFIG ---
-st.set_page_config(page_title="L9 Bets Beta", page_icon="📈", layout="centered")
+st.set_page_config(page_title="L9 Bet System", page_icon="📈", layout="centered")
 
-# --- SPORTARTAUSWAHL ---
 sportart = st.sidebar.radio("Sportart wählen", ["⚽ Fußball (Minor Leagues)", "🏀 WNBA Basketball (CSV)"])
 
 # ==============================================================================
-# SÄULE 1: FUSSBALL (INKLUSIVE AUTOMATISCHER FAIREN QUOTE)
+# SÄULE 1: FUSSBALL (MIT TIME DECAY & DIXON-COLES)
 # ==============================================================================
 if sportart == "⚽ Fußball (Minor Leagues)":
     st.title("⚽ Tipico Fußball-Analyst Pro")
+    st.caption("Mit Dixon-Coles Korrektur & Time Decay Form-Gewichtung")
 
     @st.cache_data
     def lade_fussball_daten():
@@ -112,12 +148,15 @@ if sportart == "⚽ Fußball (Minor Leagues)":
         if not csv_dateien: return None, None, None
         
         daten_liste = []
+        heute = pd.Timestamp(datetime.date.today())
+        
         for datei in csv_dateien:
             try:
                 df_temp = pd.read_csv(datei, sep=None, engine='python', encoding='utf-8')
                 df_temp.columns = [str(c).strip().upper() for c in df_temp.columns]
                 
                 div_col = next((c for c in df_temp.columns if c in ['DIV', 'LEAGUE', 'LIGA', 'COUNTRY']), None)
+                date_col = next((c for c in df_temp.columns if c in ['DATE', 'DATUM']), None)
                 home_col = next((c for c in df_temp.columns if c in ['HOMETEAM', 'HOME', 'HEIM']), None)
                 away_col = next((c for c in df_temp.columns if c in ['AWAYTEAM', 'AWAY', 'AUSWAERTS']), None)
                 fthg_col = next((c for c in df_temp.columns if c in ['FTHG', 'HG', 'GOALSHOME', 'HOME_GOALS']), None)
@@ -128,27 +167,25 @@ if sportart == "⚽ Fußball (Minor Leagues)":
                 if not all([home_col, away_col, fthg_col, ftag_col]): continue
                     
                 clean_df = pd.DataFrame()
-                if div_col:
-                    clean_df['Div'] = df_temp[div_col].astype(str).str.strip()
-                else:
-                    clean_df['Div'] = os.path.splitext(os.path.basename(datei))[0].upper()
-                    
+                clean_df['Div'] = df_temp[div_col].astype(str).str.strip() if div_col else os.path.splitext(os.path.basename(datei))[0].upper()
                 clean_df['HomeTeam'] = df_temp[home_col].astype(str).str.strip()
                 clean_df['AwayTeam'] = df_temp[away_col].astype(str).str.strip()
                 clean_df['FTHG'] = pd.to_numeric(df_temp[fthg_col], errors='coerce')
                 clean_df['FTAG'] = pd.to_numeric(df_temp[ftag_col], errors='coerce')
                 
-                if hthg_col:
-                    clean_df['HTHG'] = pd.to_numeric(df_temp[hthg_col], errors='coerce')
+                clean_df['HTHG'] = pd.to_numeric(df_temp[hthg_col], errors='coerce') if hthg_col else (clean_df['FTHG'] * 0.42).round()
+                clean_df['HTAG'] = pd.to_numeric(df_temp[htag_col], errors='coerce') if htag_col else (clean_df['FTAG'] * 0.42).round()
+                
+                # --- TIME DECAY GEWICHTUNG ---
+                if date_col:
+                    clean_df['Date'] = pd.to_datetime(df_temp[date_col], dayfirst=True, errors='coerce')
+                    clean_df['Tage'] = (heute - clean_df['Date']).dt.days.fillna(60) # Fallback 60 Tage, falls Fehler
+                    # Formel: Je älter das Spiel, desto geringer das Gewicht. (Alpha = 0.005)
+                    clean_df['Weight'] = np.exp(-0.005 * clean_df['Tage'])
                 else:
-                    clean_df['HTHG'] = (clean_df['FTHG'] * 0.42).round()
+                    clean_df['Weight'] = 1.0 # Standardgewicht, falls kein Datum in CSV
                     
-                if htag_col:
-                    clean_df['HTAG'] = pd.to_numeric(df_temp[htag_col], errors='coerce')
-                else:
-                    clean_df['HTAG'] = (clean_df['FTAG'] * 0.42).round()
-                    
-                daten_liste.append(clean_df.dropna())
+                daten_liste.append(clean_df.dropna(subset=['FTHG', 'FTAG', 'HomeTeam', 'AwayTeam']))
             except: pass
             
         if not daten_liste: return None, None, None
@@ -160,22 +197,39 @@ if sportart == "⚽ Fußball (Minor Leagues)":
         
         for liga in alle_ligen:
             df_liga = df_gesamt[df_gesamt['Div'] == liga]
-            avg_fthg, avg_ftag = df_liga['FTHG'].mean(), df_liga['FTAG'].mean()
-            avg_hthg, avg_htag = df_liga['HTHG'].mean(), df_liga['HTAG'].mean()
+            
+            # Gewichtete Liga-Durchschnitte
+            avg_fthg = weighted_avg(df_liga['FTHG'], df_liga['Weight'])
+            avg_ftag = weighted_avg(df_liga['FTAG'], df_liga['Weight'])
+            avg_hthg = weighted_avg(df_liga['HTHG'], df_liga['Weight'])
+            avg_htag = weighted_avg(df_liga['HTAG'], df_liga['Weight'])
             
             team_stats = {}
             for team in df_liga['HomeTeam'].unique():
                 home = df_liga[df_liga['HomeTeam'] == team]
                 away = df_liga[df_liga['AwayTeam'] == team]
+                
+                # Gewichtete Team-Durchschnitte
+                h_fthg = weighted_avg(home['FTHG'], home['Weight'])
+                h_ftag = weighted_avg(home['FTAG'], home['Weight'])
+                a_ftag = weighted_avg(away['FTAG'], away['Weight'])
+                a_fthg = weighted_avg(away['FTHG'], away['Weight'])
+                
+                h_hthg = weighted_avg(home['HTHG'], home['Weight'])
+                h_htag = weighted_avg(home['HTAG'], home['Weight'])
+                a_htag = weighted_avg(away['HTAG'], away['Weight'])
+                a_hthg = weighted_avg(away['HTHG'], away['Weight'])
+                
+                # Offensiv/Defensiv-Rating relativ zur Liga
                 team_stats[team] = {
-                    'FT_HA': (home['FTHG'].mean() / avg_fthg) if avg_fthg > 0 else 1,
-                    'FT_HD': (home['FTAG'].mean() / avg_ftag) if avg_ftag > 0 else 1,
-                    'FT_AA': (away['FTAG'].mean() / avg_ftag) if avg_ftag > 0 else 1,
-                    'FT_AD': (away['FTHG'].mean() / avg_fthg) if avg_fthg > 0 else 1,
-                    'HT_HA': (home['HTHG'].mean() / avg_hthg) if avg_hthg > 0 else 1,
-                    'HT_HD': (home['HTAG'].mean() / avg_htag) if avg_htag > 0 else 1,
-                    'HT_AA': (away['HTAG'].mean() / avg_htag) if avg_htag > 0 else 1,
-                    'HT_AD': (away['HTHG'].mean() / avg_hthg) if avg_hthg > 0 else 1,
+                    'FT_HA': (h_fthg / avg_fthg) if avg_fthg > 0 else 1,
+                    'FT_HD': (h_ftag / avg_ftag) if avg_ftag > 0 else 1,
+                    'FT_AA': (a_ftag / avg_ftag) if avg_ftag > 0 else 1,
+                    'FT_AD': (a_fthg / avg_fthg) if avg_fthg > 0 else 1,
+                    'HT_HA': (h_hthg / avg_hthg) if avg_hthg > 0 else 1,
+                    'HT_HD': (h_htag / avg_htag) if avg_htag > 0 else 1,
+                    'HT_AA': (a_htag / avg_htag) if avg_htag > 0 else 1,
+                    'HT_AD': (a_hthg / avg_hthg) if avg_hthg > 0 else 1,
                 }
             liga_daten[liga] = {'avg_fthg': avg_fthg, 'avg_ftag': avg_ftag, 'avg_hthg': avg_hthg, 'avg_htag': avg_htag, 'team_stats': team_stats}
         return df_gesamt, liga_daten, alle_teams
@@ -185,7 +239,7 @@ if sportart == "⚽ Fußball (Minor Leagues)":
         st.error("❌ Keine Fußball-CSVs gefunden!")
         st.stop()
 
-    st.caption(f"Aktive Ligen: {', '.join(list(liga_daten.keys()))}")
+    st.caption(f"Aktive Ligen (Gewichtete Daten): {', '.join(list(liga_daten.keys()))}")
 
     col1, col2 = st.columns(2)
     with col1: home_team = st.selectbox("Heimteam", alle_teams)
@@ -201,12 +255,15 @@ if sportart == "⚽ Fußball (Minor Leagues)":
             liga = liga_daten[aktuelle_liga]
             s = liga['team_stats']
             
-            ht_home_xg = s[home_team]['HT_HA'] * s[away_team]['HT_AD'] * liga['avg_hthg']
-            ht_away_xg = s[away_team]['HT_AA'] * s[home_team]['HT_HD'] * liga['avg_htag']
-            ft_home_xg = s[home_team]['FT_HA'] * s[away_team]['FT_AD'] * liga['avg_fthg']
-            ft_away_xg = s[away_team]['FT_AA'] * s[home_team]['FT_HD'] * liga['avg_ftag']
+            # Expected Goals berechnen
+            ht_home_xg = max(0.1, s[home_team]['HT_HA'] * s[away_team]['HT_AD'] * liga['avg_hthg'])
+            ht_away_xg = max(0.1, s[away_team]['HT_AA'] * s[home_team]['HT_HD'] * liga['avg_htag'])
+            ft_home_xg = max(0.1, s[home_team]['FT_HA'] * s[away_team]['FT_AD'] * liga['avg_fthg'])
+            ft_away_xg = max(0.1, s[away_team]['FT_AA'] * s[home_team]['FT_HD'] * liga['avg_ftag'])
             
-            sh_home_xg, sh_away_xg = max(0.01, ft_home_xg - ht_home_xg), max(0.01, ft_away_xg - ht_away_xg)
+            # Matrix Generierung (Mit Dixon-Coles!)
+            ft_matrix = berechne_match_matrix_dixon_coles(ft_home_xg, ft_away_xg)
+            ht_matrix = berechne_match_matrix_dixon_coles(ht_home_xg, ht_away_xg)
             
             home_win, draw, away_win = 0, 0, 0
             ht_home_win, ht_draw, ht_away_win = 0, 0, 0
@@ -215,38 +272,34 @@ if sportart == "⚽ Fußball (Minor Leagues)":
             
             hc_home_bonus, hc_away_bonus = parse_handicap(fb_hc_str)
             
-            for i in range(6):
-                p_ht_h = poisson_pmf(i, ht_home_xg)
-                for j in range(6):
-                    p_ht = p_ht_h * poisson_pmf(j, ht_away_xg)
+            # Iteriere über die generierten Matrizen, um Wahrscheinlichkeiten zu summieren
+            for i in range(6): # Heimtore
+                for j in range(6): # Auswärtstore
+                    p_ft = ft_matrix[i, j]
+                    p_ht = ht_matrix[i, j]
                     
+                    # Halbzeit
                     if i > j: ht_home_win += p_ht
                     elif i == j: ht_draw += p_ht
                     else: ht_away_win += p_ht
                     
-                    for k in range(6):
-                        p_sh_h = poisson_pmf(k, sh_home_xg)
-                        for l in range(6):
-                            p_full = p_ht * p_sh_h * poisson_pmf(l, sh_away_xg)
-                            
-                            f_h, f_a = i + k, j + l
-                            
-                            if f_h > f_a: home_win += p_full
-                            elif f_h == f_a: draw += p_full
-                            else: away_win += p_full
-                            
-                            v_h = f_h + hc_home_bonus
-                            v_a = f_a + hc_away_bonus
-                            if abs(v_h - v_a) < 1e-5: hc_draw += p_full
-                            elif v_h > v_a: hc_home_win += p_full
-                            else: hc_away_win += p_full
-                            
-                            if (f_h + f_a) > 2.5: over25 += p_full
-                            if f_h > 0 and f_a > 0: btts_yes += p_full
+                    # Vollzeit
+                    if i > j: home_win += p_ft
+                    elif i == j: draw += p_ft
+                    else: away_win += p_ft
+                    
+                    # Handicap
+                    v_h = i + hc_home_bonus
+                    v_a = j + hc_away_bonus
+                    if abs(v_h - v_a) < 1e-5: hc_draw += p_ft
+                    elif v_h > v_a: hc_home_win += p_ft
+                    else: hc_away_win += p_ft
+                    
+                    # Tore-Märkte
+                    if (i + j) > 2.5: over25 += p_ft
+                    if i > 0 and j > 0: btts_yes += p_ft
 
             st.divider()
-            
-            # Helper für Division-Safe faire Quote
             def fq(p): return f"Fair: {1/max(0.0001, p):.2f}"
             
             # 1. Vollzeit 3-Way & Doppelte Chance
@@ -298,7 +351,7 @@ if sportart == "⚽ Fußball (Minor Leagues)":
 # SÄULE 2: WNBA BASKETBALL
 # ==============================================================================
 else:
-    st.title("🏀 WNBA Buchmacher-Analyst (KI-Injury Update)")
+    st.title("🏀 WNBA Buchmacher-Analyst")
 
     @st.cache_data
     def lade_wnba_daten():
