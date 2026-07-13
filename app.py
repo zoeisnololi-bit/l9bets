@@ -57,18 +57,35 @@ st.caption("Mit Fatigue-Faktor, Margin-Removal & Recency-Weighting")
 def lade_wnba_daten():
     if not os.path.exists('wnba_stats.csv'): return "FEHLT", None
     try:
-        df = pd.read_csv('wnba_stats.csv', sep=None, engine='python', encoding='utf-8')
+        # Standard-Einlesen
+        df = pd.read_csv('wnba_stats.csv', encoding='utf-8')
+        
+        # 1. FIX: Verrutschte Header erkennen (Klassiker bei Basketball-Reference Exporten)
+        # Wenn 'Team' nicht in den Überschriften ist, suchen wir in den ersten 5 Zeilen danach
+        if 'Team' not in df.columns and 'TEAM' not in [str(c).upper() for c in df.columns]:
+            for i in range(5):
+                row_vals = [str(x).strip().upper() for x in df.iloc[i].values]
+                if 'TEAM' in row_vals and 'PTS' in row_vals:
+                    df.columns = df.iloc[i] # Mache diese Zeile zu den neuen Überschriften
+                    df = df[i+1:].reset_index(drop=True) # Lösche alles darüber
+                    break
+                    
+        # Überschriften bereinigen (alles Großbuchstaben, keine Leerzeichen)
         df.columns = [str(c).strip().upper() for c in df.columns]
             
-        # Modell erwartet Spalten: TEAM, PTS. OPP_PTS und PACE simulieren wir bei Bedarf.
+        # 2. Spalten identifizieren
         team_col = next((c for c in df.columns if c in ['TEAM', 'TEAM_NAME', 'NAME', 'MANNSCHAFT']), None)
         pts_col = next((c for c in df.columns if c in ['PTS', 'POINTS', 'PUNKTE']), None)
         opp_col = next((c for c in df.columns if c in ['OPP_PTS', 'OPP_POINTS', 'OPPTS']), None)
         pace_col = next((c for c in df.columns if c in ['PACE', 'SPEED']), None)
             
-        if not team_col or not pts_col: return "SPALTEN_FEHLER", None
+        if not team_col or not pts_col: 
+            return f"SPALTEN_FEHLER. Gefundene Header: {list(df.columns)}", None
 
-        # Fallback, falls OPP_PTS oder PACE im Datensatz fehlen (wie bei deiner neuen CSV)
+        # 3. FIX: Sicherstellen, dass PTS eine Zahl ist (und nicht aus Versehen als Text gelesen wurde)
+        df[pts_col] = pd.to_numeric(df[pts_col], errors='coerce')
+
+        # Fallback, falls OPP_PTS oder PACE im Datensatz fehlen
         if not opp_col:
             df['OPP_PTS'] = df[pts_col].mean() # Ligadurchschnitt als Gegner-Punkte
             opp_col = 'OPP_PTS'
@@ -77,10 +94,16 @@ def lade_wnba_daten():
             df['PACE'] = 80.0 # Standardwert für WNBA Pace
             pace_col = 'PACE'
             
+        # Sauberen Datensatz bauen
         clean_df = df[[team_col, pts_col, opp_col, pace_col]].copy()
         clean_df.columns = ['Team', 'PTS', 'OPP_PTS', 'PACE']
+        
+        # Leere Zeilen (NaNs) entfernen, die durch den Export entstanden sein könnten
+        clean_df = clean_df.dropna()
+        
         return "EFFIZIENZ_MODELL", clean_df
-    except: return "ERROR", None
+    except Exception as e: 
+        return f"ERROR: {str(e)}", None
 
 modell_typ, wnba_df = lade_wnba_daten()
 
