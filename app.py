@@ -60,14 +60,22 @@ def lade_wnba_daten():
         df = pd.read_csv('wnba_stats.csv', sep=None, engine='python', encoding='utf-8')
         df.columns = [str(c).strip().upper() for c in df.columns]
             
-        # Modell erwartet Spalten: TEAM, PTS, OPP_PTS, PACE
-        # Optional: DATE (für Time Decay)
+        # Modell erwartet Spalten: TEAM, PTS. OPP_PTS und PACE simulieren wir bei Bedarf.
         team_col = next((c for c in df.columns if c in ['TEAM', 'TEAM_NAME', 'NAME', 'MANNSCHAFT']), None)
         pts_col = next((c for c in df.columns if c in ['PTS', 'POINTS', 'PUNKTE']), None)
         opp_col = next((c for c in df.columns if c in ['OPP_PTS', 'OPP_POINTS', 'OPPTS']), None)
         pace_col = next((c for c in df.columns if c in ['PACE', 'SPEED']), None)
             
-        if not all([team_col, pts_col, opp_col, pace_col]): return "SPALTEN_FEHLER", None
+        if not team_col or not pts_col: return "SPALTEN_FEHLER", None
+
+        # Fallback, falls OPP_PTS oder PACE im Datensatz fehlen (wie bei deiner neuen CSV)
+        if not opp_col:
+            df['OPP_PTS'] = df[pts_col].mean() # Ligadurchschnitt als Gegner-Punkte
+            opp_col = 'OPP_PTS'
+        
+        if not pace_col:
+            df['PACE'] = 80.0 # Standardwert für WNBA Pace
+            pace_col = 'PACE'
             
         clean_df = df[[team_col, pts_col, opp_col, pace_col]].copy()
         clean_df.columns = ['Team', 'PTS', 'OPP_PTS', 'PACE']
@@ -75,8 +83,10 @@ def lade_wnba_daten():
     except: return "ERROR", None
 
 modell_typ, wnba_df = lade_wnba_daten()
-if "ERROR" in str(modell_typ): 
-    st.error("Datenfehler in wnba_stats.csv")
+
+# Die korrigierte Fehlerabfrage fängt jetzt ALLES ab, wenn df == None ist
+if wnba_df is None: 
+    st.error(f"Daten-Ladefehler: {modell_typ}. Bitte lade eine gültige wnba_stats.csv mit 'Team' und 'PTS' hoch.")
     st.stop()
 
 teams_list = sorted(wnba_df['Team'].tolist())
