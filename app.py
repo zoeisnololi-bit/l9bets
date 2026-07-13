@@ -8,13 +8,12 @@ import xml.etree.ElementTree as ET
 # --- KONFIGURATION ---
 st.set_page_config(page_title="WNBA Value Analyst", page_icon="🏀", layout="centered")
 st.title("🏀 WNBA Value Analyst Pro")
-st.caption("Mit dynamischer Wahrscheinlichkeitsberechnung & Live-Verletzungsnews")
+st.caption("Mit dynamischem Handicap, Verletzungs-Datenbank & Home Court Advantage")
 
 # --- HILFSFUNKTIONEN ---
-@st.cache_data(ttl=3600) # Cached die News für 1 Stunde, um Google-Sperren zu vermeiden
+@st.cache_data(ttl=3600)
 def hole_live_news(team):
     try:
-        # Sucht gezielt nach Teamnamen + Verletzungen/News (Englischer Feed für WNBA besser)
         query = urllib.parse.quote(f'"{team}" WNBA injury OR news')
         url = f"https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en"
         
@@ -23,9 +22,8 @@ def hole_live_news(team):
             xml_data = response.read()
             
         root = ET.fromstring(xml_data)
-        # Die 3 aktuellsten Artikel ziehen
         return [{"titel": i.find('title').text, "link": i.find('link').text} for i in root.findall('.//item')[:3]]
-    except Exception as e:
+    except Exception:
         return []
 
 @st.cache_data
@@ -67,6 +65,19 @@ def lade_wnba_daten():
     except: 
         return "ERROR", None
 
+def berechne_hca(team_name):
+    """Berechnet den Home Court Advantage (Heimvorteil) basierend auf dem Team"""
+    team_upper = str(team_name).upper()
+    if any(x in team_upper for x in ['VEGAS', 'ACES', 'LVA']): return 3.0
+    if any(x in team_upper for x in ['INDIANA', 'FEVER', 'IND']): return 2.5
+    if any(x in team_upper for x in ['NEW YORK', 'LIBERTY', 'NYL']): return 2.5
+    if any(x in team_upper for x in ['SEATTLE', 'STORM', 'SEA']): return 2.5
+    if any(x in team_upper for x in ['CONNECTICUT', 'SUN', 'CON']): return 2.0
+    if any(x in team_upper for x in ['MINNESOTA', 'LYNX', 'MIN']): return 2.0
+    if any(x in team_upper for x in ['PHOENIX', 'MERCURY', 'PHO']): return 2.0
+    # Standard-Heimvorteil für den Rest (Dallas, Atlanta, Chicago, LA, Washington)
+    return 1.5
+
 # --- DATEN-CHECK ---
 status, wnba_df = lade_wnba_daten()
 if wnba_df is None: 
@@ -84,6 +95,30 @@ col_a, col_b = st.columns(2)
 rest_home = col_a.slider("Pause Heimteam (Tage)", 0, 5, 2)
 rest_away = col_b.slider("Pause Auswärtsteam (Tage)", 0, 5, 2)
 
+st.write("#### 🚑 Verletzungs-Ausfälle")
+st.caption("Wähle aus, wer laut den News fehlt. Das Modell berechnet den Punkte-Malus automatisch.")
+
+# Spieler-Datenbank (ATS Values)
+wnba_player_values = {
+    "⭐ A'ja Wilson (LVA)": 5.0, "⭐ Breanna Stewart (NYL)": 4.5, "⭐ Napheesa Collier (MIN)": 4.0,
+    "⭐ Alyssa Thomas (CON)": 3.5, "⭐ Caitlin Clark (IND)": 3.5, "⭐ Sabrina Ionescu (NYL)": 3.0,
+    "🏀 Kelsey Plum (LVA)": 2.5, "🏀 Jewell Loyd (SEA)": 2.5, "🏀 Arike Ogunbowale (DAL)": 2.5,
+    "🏀 Jonquel Jones (NYL)": 2.5, "🏀 Kahleah Copper (PHO)": 2.5, "🏀 Brittney Griner (PHO)": 2.0,
+    "🏀 Nneka Ogwumike (SEA)": 2.0, "🏀 Jackie Young (LVA)": 2.0, "🏀 Aliyah Boston (IND)": 1.5,
+    "🏀 Chelsea Gray (LVA)": 1.5, "🏀 DeWanna Bonner (CON)": 1.5, "🏀 Rhyne Howard (ATL)": 1.5,
+    "👤 Standard Starter (Generisch)": 1.5, "👤 Bankspieler (Generisch)": 0.5
+}
+
+inj_col1, inj_col2 = st.columns(2)
+home_ausfaelle = inj_col1.multiselect(f"Ausfälle {wnba_home}", list(wnba_player_values.keys()))
+away_ausfaelle = inj_col2.multiselect(f"Ausfälle {wnba_away}", list(wnba_player_values.keys()))
+
+inj_home = sum([wnba_player_values[s] for s in home_ausfaelle])
+inj_away = sum([wnba_player_values[s] for s in away_ausfaelle])
+
+if inj_home > 0 or inj_away > 0:
+    st.info(f"📊 Automatischer Verletzungs-Malus: Heim (-{inj_home} Pkt) | Auswärts (-{inj_away} Pkt)")
+
 st.write("#### 💰 Buchmacher-Linien")
 q_col1, q_col2 = st.columns(2)
 b_spread = q_col1.number_input("Handicap Heimteam (z.B. -3.5)", value=-3.5, step=0.5)
@@ -96,9 +131,14 @@ if st.button("🚀 Analyse & Live-News abrufen", use_container_width=True):
         
     fatigue_home = 2.0 if rest_home == 0 else (1.0 if rest_home == 1 else 0)
     fatigue_away = 2.0 if rest_away == 0 else (1.0 if rest_away == 1 else 0)
+    
+    # HEIMVORTEIL (Home Court Advantage) berechnen
+    hca_points = berechne_hca(wnba_home)
         
-    exp_pts_home = (t_home['PTS'] + t_away['OPP_PTS']) / 2 - fatigue_home
-    exp_pts_away = (t_away['PTS'] + t_home['OPP_PTS']) / 2 - fatigue_away
+    # SCORE BERECHNUNG MIT ALLEN FAKTOREN
+    # Base + Heimvorteil - Müdigkeit - Verletzungen
+    exp_pts_home = ((t_home['PTS'] + t_away['OPP_PTS']) / 2) + hca_points - fatigue_home - inj_home
+    exp_pts_away = ((t_away['PTS'] + t_home['OPP_PTS']) / 2) - fatigue_away - inj_away
     
     model_margin = exp_pts_home - exp_pts_away
     model_total = exp_pts_home + exp_pts_away
@@ -112,6 +152,7 @@ if st.button("🚀 Analyse & Live-News abrufen", use_container_width=True):
     
     # --- AUSGABE BERECHNUNGEN ---
     st.divider()
+    st.caption(f"🏟️ *Automatischer Home Court Advantage (HCA) für {wnba_home}: +{hca_points} Punkte eingerechnet.*")
     st.subheader(f"🎯 Spiel-Prognose: {exp_pts_home:.1f} - {exp_pts_away:.1f}")
     
     # Handicap
@@ -125,7 +166,7 @@ if st.button("🚀 Analyse & Live-News abrufen", use_container_width=True):
     elif prob_home_cover < 45.0:
         st.success(f"🔥 **Value auf {wnba_away} ({(b_spread*-1):+})** mit **{100-prob_home_cover:.1f}%** Wahrscheinlichkeit!")
     else:
-        st.warning(f"Kein klarer Value beim Handicap (Markt ist effizient).")
+        st.warning(f"Kein klarer Value beim Handicap (Markt ist effizient). Wahrscheinlichkeit: {prob_home_cover:.1f}%")
 
     st.write("---")
     
@@ -140,13 +181,12 @@ if st.button("🚀 Analyse & Live-News abrufen", use_container_width=True):
     elif prob_over < 45.0:
         st.success(f"🔥 **Value im UNDER** mit **{100-prob_over:.1f}%** Wahrscheinlichkeit!")
     else:
-        st.warning(f"Kein klarer Value beim Total (Markt ist effizient).")
+        st.warning(f"Kein klarer Value beim Total (Markt ist effizient). Wahrscheinlichkeit OVER: {prob_over:.1f}%")
 
     # --- AUSGABE LIVE-NEWS ---
     st.divider()
     st.subheader("📰 Live News & Verletzungs-Updates")
     
-    # Ladeindikator für die News, damit die App nicht "eingefroren" wirkt
     with st.spinner('Ziehe aktuelle News vom Google-Feed...'):
         news_home = hole_live_news(wnba_home)
         news_away = hole_live_news(wnba_away)
