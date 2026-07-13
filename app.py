@@ -1,21 +1,40 @@
 import streamlit as st
 import pandas as pd
 import os
-import math
+import urllib.request
+import urllib.parse
+import xml.etree.ElementTree as ET
 
+# --- KONFIGURATION ---
 st.set_page_config(page_title="WNBA Value Analyst", page_icon="🏀", layout="centered")
-
 st.title("🏀 WNBA Value Analyst Pro")
-st.caption("Mit dynamischer Wahrscheinlichkeitsberechnung für Handicap & Over/Under")
+st.caption("Mit dynamischer Wahrscheinlichkeitsberechnung & Live-Verletzungsnews")
 
-# --- 1. DATEN LADEN (Der "kugelsichere" Loader) ---
+# --- HILFSFUNKTIONEN ---
+@st.cache_data(ttl=3600) # Cached die News für 1 Stunde, um Google-Sperren zu vermeiden
+def hole_live_news(team):
+    try:
+        # Sucht gezielt nach Teamnamen + Verletzungen/News (Englischer Feed für WNBA besser)
+        query = urllib.parse.quote(f'"{team}" WNBA injury OR news')
+        url = f"https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en"
+        
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=4) as response: 
+            xml_data = response.read()
+            
+        root = ET.fromstring(xml_data)
+        # Die 3 aktuellsten Artikel ziehen
+        return [{"titel": i.find('title').text, "link": i.find('link').text} for i in root.findall('.//item')[:3]]
+    except Exception as e:
+        return []
+
 @st.cache_data
 def lade_wnba_daten():
     if not os.path.exists('wnba_stats.csv'): return "FEHLT", None
     try:
         df = pd.read_csv('wnba_stats.csv', encoding='utf-8')
         
-        # Verrutschte Header erkennen und reparieren
+        # Verrutschte Header reparieren
         if 'Team' not in df.columns and 'TEAM' not in [str(c).upper() for c in df.columns]:
             for i in range(5):
                 row_vals = [str(x).strip().upper() for x in df.iloc[i].values]
@@ -26,9 +45,9 @@ def lade_wnba_daten():
                     
         df.columns = [str(c).strip().upper() for c in df.columns]
             
-        team_col = next((c for c in df.columns if c in ['TEAM', 'TEAM_NAME', 'NAME', 'MANNSCHAFT']), None)
-        pts_col = next((c for c in df.columns if c in ['PTS', 'POINTS', 'PUNKTE']), None)
-        opp_col = next((c for c in df.columns if c in ['OPP_PTS', 'OPP_POINTS', 'OPPTS']), None)
+        team_col = next((c for c in df.columns if c in ['TEAM', 'TEAM_NAME', 'NAME']), None)
+        pts_col = next((c for c in df.columns if c in ['PTS', 'POINTS']), None)
+        opp_col = next((c for c in df.columns if c in ['OPP_PTS', 'OPP_POINTS']), None)
         pace_col = next((c for c in df.columns if c in ['PACE', 'SPEED']), None)
             
         if not team_col or not pts_col: return None, None
@@ -45,16 +64,16 @@ def lade_wnba_daten():
         clean_df = df[[team_col, pts_col, opp_col, pace_col]].copy().dropna()
         clean_df.columns = ['Team', 'PTS', 'OPP_PTS', 'PACE']
         return "OK", clean_df
-    except Exception as e: 
+    except: 
         return "ERROR", None
 
+# --- DATEN-CHECK ---
 status, wnba_df = lade_wnba_daten()
-
 if wnba_df is None: 
-    st.error("Daten-Ladefehler. Bitte lade eine gültige wnba_stats.csv mit 'Team' und 'PTS' hoch.")
+    st.error("Daten-Ladefehler. Bitte lade eine gültige wnba_stats.csv hoch.")
     st.stop()
 
-# --- 2. USER INTERFACE ---
+# --- UI: PARAMETER ---
 teams_list = sorted(wnba_df['Team'].tolist())
 c1, c2 = st.columns(2)
 wnba_home = c1.selectbox("Heimteam", teams_list, index=0)
@@ -70,43 +89,32 @@ q_col1, q_col2 = st.columns(2)
 b_spread = q_col1.number_input("Handicap Heimteam (z.B. -3.5)", value=-3.5, step=0.5)
 b_total = q_col2.number_input("Over/Under Linie", value=165.5, step=0.5)
 
-# --- 3. BERECHNUNG & AUSGABE ---
-if st.button("🚀 Wahrscheinlichkeiten berechnen", use_container_width=True):
+# --- BERECHNUNG ---
+if st.button("🚀 Analyse & Live-News abrufen", use_container_width=True):
     t_home = wnba_df[wnba_df['Team'] == wnba_home].iloc[0]
     t_away = wnba_df[wnba_df['Team'] == wnba_away].iloc[0]
         
-    # Fatigue Adjustments (Müdigkeit kostet Punkte)
     fatigue_home = 2.0 if rest_home == 0 else (1.0 if rest_home == 1 else 0)
     fatigue_away = 2.0 if rest_away == 0 else (1.0 if rest_away == 1 else 0)
         
-    # Erwartete Punkte berechnen (Offensive des einen vs. Defensive des anderen)
     exp_pts_home = (t_home['PTS'] + t_away['OPP_PTS']) / 2 - fatigue_home
     exp_pts_away = (t_away['PTS'] + t_home['OPP_PTS']) / 2 - fatigue_away
     
-    # Modelle für Spread und Total
     model_margin = exp_pts_home - exp_pts_away
     model_total = exp_pts_home + exp_pts_away
     
-    # --- PROBABILITIES (Wahrscheinlichkeiten) ---
-    # In der WNBA entspricht 1 Punkt Differenz ca. 3.5% Wahrscheinlichkeit beim Handicap
-    # und ca. 2.5% Wahrscheinlichkeit beim Total.
-    
-    # 1. Handicap Wahrscheinlichkeit
-    bookie_margin = -b_spread # z.B. -3.5 bedeutet, Buchmacher erwartet +3.5 Vorsprung fürs Heimteam
+    bookie_margin = -b_spread 
     edge_spread = model_margin - bookie_margin
-    prob_home_cover = 50.0 + (edge_spread * 3.5)
-    prob_home_cover = max(5.0, min(95.0, prob_home_cover)) # Cappen zwischen 5% und 95%
+    prob_home_cover = max(5.0, min(95.0, 50.0 + (edge_spread * 3.5)))
     
-    # 2. Total Wahrscheinlichkeit
     edge_total = model_total - b_total
-    prob_over = 50.0 + (edge_total * 2.5)
-    prob_over = max(5.0, min(95.0, prob_over))
+    prob_over = max(5.0, min(95.0, 50.0 + (edge_total * 2.5)))
     
-    # --- VISUELLE AUSGABE ---
+    # --- AUSGABE BERECHNUNGEN ---
     st.divider()
     st.subheader(f"🎯 Spiel-Prognose: {exp_pts_home:.1f} - {exp_pts_away:.1f}")
     
-    # HANDICAP AUSGABE
+    # Handicap
     st.write("### ⚖️ Handicap (Spread)")
     h_col1, h_col2 = st.columns(2)
     h_col1.metric("Dein Model-Spread", f"{model_margin*-1:.1f}")
@@ -121,7 +129,7 @@ if st.button("🚀 Wahrscheinlichkeiten berechnen", use_container_width=True):
 
     st.write("---")
     
-    # OVER/UNDER AUSGABE
+    # Over/Under
     st.write("### 📈 Over / Under")
     o_col1, o_col2 = st.columns(2)
     o_col1.metric("Dein Model-Total", f"{model_total:.1f}")
@@ -133,3 +141,30 @@ if st.button("🚀 Wahrscheinlichkeiten berechnen", use_container_width=True):
         st.success(f"🔥 **Value im UNDER** mit **{100-prob_over:.1f}%** Wahrscheinlichkeit!")
     else:
         st.warning(f"Kein klarer Value beim Total (Markt ist effizient).")
+
+    # --- AUSGABE LIVE-NEWS ---
+    st.divider()
+    st.subheader("📰 Live News & Verletzungs-Updates")
+    
+    # Ladeindikator für die News, damit die App nicht "eingefroren" wirkt
+    with st.spinner('Ziehe aktuelle News vom Google-Feed...'):
+        news_home = hole_live_news(wnba_home)
+        news_away = hole_live_news(wnba_away)
+        
+        n_col1, n_col2 = st.columns(2)
+        
+        with n_col1:
+            st.markdown(f"**{wnba_home}**")
+            if news_home:
+                for n in news_home:
+                    st.markdown(f"- [{n['titel']}]({n['link']})")
+            else:
+                st.info("Keine aktuellen relevanten News gefunden.")
+                
+        with n_col2:
+            st.markdown(f"**{wnba_away}**")
+            if news_away:
+                for n in news_away:
+                    st.markdown(f"- [{n['titel']}]({n['link']})")
+            else:
+                st.info("Keine aktuellen relevanten News gefunden.")
