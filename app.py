@@ -10,7 +10,7 @@ import datetime
 # --- KONFIGURATION ---
 st.set_page_config(page_title="WNBA Value Analyst", page_icon="🏀", layout="centered")
 st.title("🏀 WNBA Value Analyst Pro")
-st.caption("Vollautomatisch: ESPN Kalender-Sync, Live-News Scanner & Edge-Rechner")
+st.caption("Vollautomatisch: ESPN Kalender-Sync, Live-News Scanner & Euro-Handicap")
 
 # --- HILFSFUNKTIONEN ---
 @st.cache_data(ttl=3600)
@@ -53,11 +53,9 @@ def auto_detect_injuries(news_list, player_dict):
                         
     return out_list, dtd_list
 
-@st.cache_data(ttl=3600*12) # 12 Stunden Cache reicht für den Spielplan
+@st.cache_data(ttl=3600*12) 
 def hole_rest_days(team_name):
-    """Zieht den Spielplan von ESPN und berechnet die Pause in Tagen"""
     try:
-        # 1. Alle Teams von ESPN holen, um die ID zu finden
         url_teams = "https://site.api.espn.com/apis/site/v2/sports/basketball/wnba/teams"
         req = urllib.request.Request(url_teams, headers={'User-Agent': 'Mozilla/5.0'})
         with urllib.request.urlopen(req, timeout=4) as response:
@@ -70,37 +68,28 @@ def hole_rest_days(team_name):
                 team_id = t['id']
                 break
                 
-        if not team_id: 
-            return 2 # Fallback, falls das Team (z.B. neue Franchise) nicht bei ESPN existiert
+        if not team_id: return 2
             
-        # 2. Spielplan für die Team-ID abrufen
         url_sched = f"https://site.api.espn.com/apis/site/v2/sports/basketball/wnba/teams/{team_id}/schedule"
         req_sched = urllib.request.Request(url_sched, headers={'User-Agent': 'Mozilla/5.0'})
         with urllib.request.urlopen(req_sched, timeout=4) as response:
             sched_data = json.loads(response.read())
             
-        # 3. Letztes abgeschlossenes Spiel suchen
         today_date = datetime.datetime.utcnow().date()
         last_game_date = None
         
         for event in sched_data.get('events', []):
             game_time_str = event['date']
-            # ESPN liefert ISO-Zeitstempel: "2026-07-12T21:00:00Z"
             game_date = datetime.datetime.strptime(game_time_str, "%Y-%m-%dT%H:%M:%SZ").date()
-            
-            # Das aktuellste Spiel VOR heute finden
             if game_date < today_date:
                 if last_game_date is None or game_date > last_game_date:
                     last_game_date = game_date
                     
-        # 4. Tage Differenz berechnen
         if last_game_date:
-            rest_days = (today_date - last_game_date).days
-            return min(rest_days, 5) # Slider maximal bis 5 Tage einstellen
-            
+            return min((today_date - last_game_date).days, 5)
         return 2
     except Exception:
-        return 2 # Fallback bei Serverproblemen
+        return 2
 
 @st.cache_data
 def lade_wnba_daten():
@@ -155,7 +144,7 @@ if wnba_df is None:
     st.error("Daten-Ladefehler. Bitte lade eine gültige wnba_stats.csv hoch.")
     st.stop()
 
-# --- SPIELER DATENBANK (ATS Values) ---
+# --- SPIELER DATENBANK ---
 wnba_player_values = {
     "⭐ A'ja Wilson (LVA)": 5.0, "⭐ Breanna Stewart (NYL)": 4.5, "⭐ Napheesa Collier (MIN)": 4.0,
     "⭐ Alyssa Thomas (CON)": 3.5, "⭐ Caitlin Clark (IND)": 3.5, "⭐ Sabrina Ionescu (NYL)": 3.0,
@@ -172,7 +161,6 @@ c1, c2 = st.columns(2)
 wnba_home = c1.selectbox("Heimteam", teams_list, index=0)
 wnba_away = c2.selectbox("Auswärtsteam", teams_list, index=1 if len(teams_list)>1 else 0)
 
-# Daten im Hintergrund laden
 news_home_data = hole_live_news(wnba_home)
 news_away_data = hole_live_news(wnba_away)
 
@@ -182,45 +170,51 @@ auto_away_out, auto_away_dtd = auto_detect_injuries(news_away_data, wnba_player_
 auto_rest_home = hole_rest_days(wnba_home)
 auto_rest_away = hole_rest_days(wnba_away)
 
-# --- SCHEDULE UI ---
 st.write("#### ✈️ Schedule & Fatigue (ESPN Auto-Sync)")
-st.caption("Das System prüft den offiziellen Kalender (Pause bis *heute*). Für Wetten auf morgige Spiele den Regler einfach +1 anpassen.")
-
 col_a, col_b = st.columns(2)
-# Der Slider übernimmt automatisch den berechneten API-Wert!
 rest_home = col_a.slider("Pause Heimteam (Tage)", 0, 5, auto_rest_home)
 rest_away = col_b.slider("Pause Auswärtsteam (Tage)", 0, 5, auto_rest_away)
 
-# --- VERLETZUNGEN UI ---
 st.write("#### 🚑 Verletzungs-Scanner (Auto-Fill)")
-st.caption("Das System unterscheidet zwischen 'Sicher Out' (voller Malus) und 'Day-to-Day' (halber Malus).")
-
 inj_col1, inj_col2 = st.columns(2)
 with inj_col1:
     st.markdown(f"**{wnba_home}**")
-    home_out = st.multiselect("Sicher Out (100% Malus)", list(wnba_player_values.keys()), default=auto_home_out, key="h_out")
-    home_dtd = st.multiselect("Day-to-Day (50% Malus)", list(wnba_player_values.keys()), default=auto_home_dtd, key="h_dtd")
+    home_out = st.multiselect("Sicher Out (100%)", list(wnba_player_values.keys()), default=auto_home_out, key="h_out")
+    home_dtd = st.multiselect("Day-to-Day (50%)", list(wnba_player_values.keys()), default=auto_home_dtd, key="h_dtd")
 
 with inj_col2:
     st.markdown(f"**{wnba_away}**")
-    away_out = st.multiselect("Sicher Out (100% Malus)", list(wnba_player_values.keys()), default=auto_away_out, key="a_out")
-    away_dtd = st.multiselect("Day-to-Day (50% Malus)", list(wnba_player_values.keys()), default=auto_away_dtd, key="a_dtd")
+    away_out = st.multiselect("Sicher Out (100%)", list(wnba_player_values.keys()), default=auto_away_out, key="a_out")
+    away_dtd = st.multiselect("Day-to-Day (50%)", list(wnba_player_values.keys()), default=auto_away_dtd, key="a_dtd")
 
 inj_home = sum([wnba_player_values[s] for s in home_out]) + sum([wnba_player_values[s] * 0.5 for s in home_dtd])
 inj_away = sum([wnba_player_values[s] for s in away_out]) + sum([wnba_player_values[s] * 0.5 for s in away_dtd])
 
-if auto_home_out or auto_home_dtd or auto_away_out or auto_away_dtd:
-    st.success("🤖 Scanner hat Status-Updates gefunden und automatisch eingeordnet!")
-if inj_home > 0 or inj_away > 0:
-    st.info(f"📊 Aktueller Verletzungs-Malus berechnet: Heim (-{inj_home:.2f} Pkt) | Auswärts (-{inj_away:.2f} Pkt)")
-
+# --- NEU: EUROPÄISCHES HANDICAP EINGABEFELD ---
 st.write("#### 💰 Buchmacher-Linien")
+st.caption("Trage das Handicap im europäischen Format ein (Heim : Auswärts). Zum Beispiel `0:3.5` oder `3.5:0`.")
 q_col1, q_col2 = st.columns(2)
-b_spread = q_col1.number_input("Handicap Heimteam (z.B. -3.5)", value=-3.5, step=0.5)
+# Text-Input anstelle von Number-Input
+b_spread_str = q_col1.text_input("Europäisches Handicap (z.B. 0:3.5)", value="0:3.5")
 b_total = q_col2.number_input("Over/Under Linie", value=165.5, step=0.5)
 
 # --- BERECHNUNG ---
 if st.button("🚀 Matchup analysieren", use_container_width=True):
+    
+    # 1. Europäisches Handicap (String) in Mathematik umwandeln
+    try:
+        # Erlaubt auch Kommas statt Punkten, falls man sich vertippt (z.B. 0:3,5)
+        h_str, a_str = b_spread_str.split(':')
+        h_headstart = float(h_str.replace(',', '.'))
+        a_headstart = float(a_str.replace(',', '.'))
+        
+        # Berechnung des klassischen Spreads (Heimvorteil - Auswärtsvorteil)
+        b_spread = h_headstart - a_headstart 
+    except ValueError:
+        st.error("Fehler: Bitte gib das Handicap im korrekten Format ein, z.B. 0:3.5 oder 5.5:0")
+        st.stop()
+    
+    # 2. Reguläre Modell-Berechnungen
     t_home = wnba_df[wnba_df['Team'] == wnba_home].iloc[0]
     t_away = wnba_df[wnba_df['Team'] == wnba_away].iloc[0]
         
@@ -247,22 +241,22 @@ if st.button("🚀 Matchup analysieren", use_container_width=True):
     st.caption(f"🏟️ *Automatischer Home Court Advantage (HCA) für {wnba_home}: +{hca_points} Punkte eingerechnet.*")
     st.subheader(f"🎯 Spiel-Prognose: {exp_pts_home:.1f} - {exp_pts_away:.1f}")
     
-    # Handicap
     st.write("### ⚖️ Handicap (Spread)")
     h_col1, h_col2 = st.columns(2)
-    h_col1.metric("Dein Model-Spread", f"{model_margin*-1:.1f}")
-    h_col2.metric("Buchmacher Handicap", f"{b_spread}")
+    # Anzeige für das eigene Modell in gleicher Optik aufbereiten (Heim-Vorteil vs. Auswärts-Vorteil)
+    model_h_str = f"0:{model_margin:.1f}" if model_margin > 0 else f"{model_margin*-1:.1f}:0"
+    h_col1.metric("Dein Model-Handicap", model_h_str)
+    h_col2.metric("Buchmacher Handicap", b_spread_str)
     
     if prob_home_cover > 55.0:
-        st.success(f"🔥 **Value auf {wnba_home} ({b_spread})** mit **{prob_home_cover:.1f}%** Wahrscheinlichkeit!")
+        st.success(f"🔥 **Value auf {wnba_home} (bei {b_spread_str})** mit **{prob_home_cover:.1f}%** Wahrscheinlichkeit!")
     elif prob_home_cover < 45.0:
-        st.success(f"🔥 **Value auf {wnba_away} ({(b_spread*-1):+})** mit **{100-prob_home_cover:.1f}%** Wahrscheinlichkeit!")
+        st.success(f"🔥 **Value auf {wnba_away} (bei {b_spread_str})** mit **{100-prob_home_cover:.1f}%** Wahrscheinlichkeit!")
     else:
-        st.warning(f"Kein klarer Value beim Handicap (Markt ist effizient). Wahrscheinlichkeit: {prob_home_cover:.1f}%")
+        st.warning(f"Kein klarer Value beim Handicap (Markt ist effizient). Wahrscheinlichkeit für Heim-Sieg (inkl. Handicap): {prob_home_cover:.1f}%")
 
     st.write("---")
     
-    # Over/Under
     st.write("### 📈 Over / Under")
     o_col1, o_col2 = st.columns(2)
     o_col1.metric("Dein Model-Total", f"{model_total:.1f}")
