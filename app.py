@@ -8,12 +8,11 @@ import xml.etree.ElementTree as ET
 # --- KONFIGURATION ---
 st.set_page_config(page_title="WNBA Value Analyst", page_icon="🏀", layout="centered")
 st.title("🏀 WNBA Value Analyst Pro")
-st.caption("Mit automatischem News-Scanner, Handicap-Rechner & Home Court Advantage")
+st.caption("Mit Auto-Scanner für 'Out' & 'Day-to-Day' Ausfälle")
 
 # --- HILFSFUNKTIONEN ---
 @st.cache_data(ttl=3600)
 def hole_live_news(team):
-    """Zieht News von Google RSS"""
     try:
         query = urllib.parse.quote(f'"{team}" WNBA injury OR news')
         url = f"https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en"
@@ -28,26 +27,33 @@ def hole_live_news(team):
         return []
 
 def auto_detect_injuries(news_list, player_dict):
-    """Scannt News-Titel nach Verletzungs-Keywords und Spielernamen"""
-    detected = []
-    # Signalwörter im Englischen für Ausfälle/Verletzungen
-    keywords = ['out', 'injur', 'miss', 'questionable', 'doubtful', 'surgery', 'protocol', 'sprain']
+    """Scannt und unterscheidet zwischen 'Sicher Out' und 'Day-to-Day'"""
+    out_list = []
+    dtd_list = []
+    
+    # Trennung der Signalwörter
+    out_kw = ['out', 'surgery', 'misses', 'miss', 'ruled out', 'will not play']
+    dtd_kw = ['day-to-day', 'day to day', 'questionable', 'doubtful', 'gtd', 'game-time decision', 'sprain', 'injury']
     
     for item in news_list:
         titel = item.get('titel', '').lower()
-        # Nur prüfen, wenn es um eine Verletzung/einen Ausfall geht
-        if any(kw in titel for kw in keywords):
+        is_out = any(kw in titel for kw in out_kw)
+        is_dtd = any(kw in titel for kw in dtd_kw)
+        
+        if is_out or is_dtd:
             for key in player_dict.keys():
-                if "Generisch" in key: 
-                    continue # "Standard Starter" etc. überspringen
+                if "Generisch" in key: continue
                 
-                # Reinen Namen extrahieren (z.B. "A'ja Wilson" aus "⭐ A'ja Wilson (LVA)")
                 clean_name = key.replace('⭐', '').replace('🏀', '').split('(')[0].strip().lower()
-                
-                # Wenn der Name in der Schlagzeile vorkommt, zur Liste hinzufügen
-                if clean_name in titel and key not in detected:
-                    detected.append(key)
-    return detected
+                if clean_name in titel:
+                    # Wenn "out" im Text steht, landet sie in der Out-Liste
+                    if is_out and key not in out_list:
+                        out_list.append(key)
+                    # Wenn nur "day-to-day" etc. im Text steht, landet sie in der DTD-Liste
+                    elif is_dtd and not is_out and key not in dtd_list and key not in out_list:
+                        dtd_list.append(key)
+                        
+    return out_list, dtd_list
 
 @st.cache_data
 def lade_wnba_daten():
@@ -119,12 +125,12 @@ c1, c2 = st.columns(2)
 wnba_home = c1.selectbox("Heimteam", teams_list, index=0)
 wnba_away = c2.selectbox("Auswärtsteam", teams_list, index=1 if len(teams_list)>1 else 0)
 
-# 🚀 NEU: Lade News still im Hintergrund und scanne sie sofort!
+# News laden und Scanner anwerfen (trennt jetzt Out & DTD)
 news_home_data = hole_live_news(wnba_home)
 news_away_data = hole_live_news(wnba_away)
 
-auto_home_injuries = auto_detect_injuries(news_home_data, wnba_player_values)
-auto_away_injuries = auto_detect_injuries(news_away_data, wnba_player_values)
+auto_home_out, auto_home_dtd = auto_detect_injuries(news_home_data, wnba_player_values)
+auto_away_out, auto_away_dtd = auto_detect_injuries(news_away_data, wnba_player_values)
 
 st.write("#### ✈️ Schedule & Fatigue")
 col_a, col_b = st.columns(2)
@@ -132,20 +138,27 @@ rest_home = col_a.slider("Pause Heimteam (Tage)", 0, 5, 2)
 rest_away = col_b.slider("Pause Auswärtsteam (Tage)", 0, 5, 2)
 
 st.write("#### 🚑 Verletzungs-Scanner (Auto-Fill)")
-st.caption("Das System durchsucht die Live-News nach Spielern aus der Datenbank. Du kannst Treffer manuell anpassen!")
+st.caption("Das System unterscheidet zwischen 'Sicher Out' (voller Malus) und 'Day-to-Day' (halber Malus).")
 
 inj_col1, inj_col2 = st.columns(2)
-# Der 'default' Parameter übergibt die gefundenen Spieler direkt an das Auswahlfeld!
-home_ausfaelle = inj_col1.multiselect(f"Ausfälle {wnba_home}", list(wnba_player_values.keys()), default=auto_home_injuries)
-away_ausfaelle = inj_col2.multiselect(f"Ausfälle {wnba_away}", list(wnba_player_values.keys()), default=auto_away_injuries)
+with inj_col1:
+    st.markdown(f"**{wnba_home}**")
+    home_out = st.multiselect("Sicher Out (100% Malus)", list(wnba_player_values.keys()), default=auto_home_out, key="h_out")
+    home_dtd = st.multiselect("Day-to-Day (50% Malus)", list(wnba_player_values.keys()), default=auto_home_dtd, key="h_dtd")
 
-inj_home = sum([wnba_player_values[s] for s in home_ausfaelle])
-inj_away = sum([wnba_player_values[s] for s in away_ausfaelle])
+with inj_col2:
+    st.markdown(f"**{wnba_away}**")
+    away_out = st.multiselect("Sicher Out (100% Malus)", list(wnba_player_values.keys()), default=auto_away_out, key="a_out")
+    away_dtd = st.multiselect("Day-to-Day (50% Malus)", list(wnba_player_values.keys()), default=auto_away_dtd, key="a_dtd")
 
-if auto_home_injuries or auto_away_injuries:
-    st.success("🤖 Scanner hat mögliche Verletzungen in den News gefunden und für dich vorausgewählt!")
+# Malus berechnen: Out = 100%, DTD = 50%
+inj_home = sum([wnba_player_values[s] for s in home_out]) + sum([wnba_player_values[s] * 0.5 for s in home_dtd])
+inj_away = sum([wnba_player_values[s] for s in away_out]) + sum([wnba_player_values[s] * 0.5 for s in away_dtd])
+
+if auto_home_out or auto_home_dtd or auto_away_out or auto_away_dtd:
+    st.success("🤖 Scanner hat Status-Updates gefunden und automatisch eingeordnet!")
 if inj_home > 0 or inj_away > 0:
-    st.info(f"📊 Aktueller Verletzungs-Malus: Heim (-{inj_home} Pkt) | Auswärts (-{inj_away} Pkt)")
+    st.info(f"📊 Aktueller Verletzungs-Malus berechnet: Heim (-{inj_home:.2f} Pkt) | Auswärts (-{inj_away:.2f} Pkt)")
 
 st.write("#### 💰 Buchmacher-Linien")
 q_col1, q_col2 = st.columns(2)
