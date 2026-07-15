@@ -4,11 +4,13 @@ import os
 import urllib.request
 import urllib.parse
 import xml.etree.ElementTree as ET
+import json
+import datetime
 
 # --- KONFIGURATION ---
 st.set_page_config(page_title="WNBA Value Analyst", page_icon="🏀", layout="centered")
 st.title("🏀 WNBA Value Analyst Pro")
-st.caption("Mit Auto-Scanner für 'Out' & 'Day-to-Day' Ausfälle")
+st.caption("Vollautomatisch: ESPN Kalender-Sync, Live-News Scanner & Edge-Rechner")
 
 # --- HILFSFUNKTIONEN ---
 @st.cache_data(ttl=3600)
@@ -27,11 +29,9 @@ def hole_live_news(team):
         return []
 
 def auto_detect_injuries(news_list, player_dict):
-    """Scannt und unterscheidet zwischen 'Sicher Out' und 'Day-to-Day'"""
     out_list = []
     dtd_list = []
     
-    # Trennung der Signalwörter
     out_kw = ['out', 'surgery', 'misses', 'miss', 'ruled out', 'will not play']
     dtd_kw = ['day-to-day', 'day to day', 'questionable', 'doubtful', 'gtd', 'game-time decision', 'sprain', 'injury']
     
@@ -46,14 +46,61 @@ def auto_detect_injuries(news_list, player_dict):
                 
                 clean_name = key.replace('⭐', '').replace('🏀', '').split('(')[0].strip().lower()
                 if clean_name in titel:
-                    # Wenn "out" im Text steht, landet sie in der Out-Liste
                     if is_out and key not in out_list:
                         out_list.append(key)
-                    # Wenn nur "day-to-day" etc. im Text steht, landet sie in der DTD-Liste
                     elif is_dtd and not is_out and key not in dtd_list and key not in out_list:
                         dtd_list.append(key)
                         
     return out_list, dtd_list
+
+@st.cache_data(ttl=3600*12) # 12 Stunden Cache reicht für den Spielplan
+def hole_rest_days(team_name):
+    """Zieht den Spielplan von ESPN und berechnet die Pause in Tagen"""
+    try:
+        # 1. Alle Teams von ESPN holen, um die ID zu finden
+        url_teams = "https://site.api.espn.com/apis/site/v2/sports/basketball/wnba/teams"
+        req = urllib.request.Request(url_teams, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=4) as response:
+            data = json.loads(response.read())
+            
+        team_id = None
+        for element in data.get('sports', [])[0].get('leagues', [])[0].get('teams', []):
+            t = element['team']
+            if team_name.lower() in t['displayName'].lower() or team_name.lower() in t['name'].lower():
+                team_id = t['id']
+                break
+                
+        if not team_id: 
+            return 2 # Fallback, falls das Team (z.B. neue Franchise) nicht bei ESPN existiert
+            
+        # 2. Spielplan für die Team-ID abrufen
+        url_sched = f"https://site.api.espn.com/apis/site/v2/sports/basketball/wnba/teams/{team_id}/schedule"
+        req_sched = urllib.request.Request(url_sched, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req_sched, timeout=4) as response:
+            sched_data = json.loads(response.read())
+            
+        # 3. Letztes abgeschlossenes Spiel suchen
+        today_date = datetime.datetime.utcnow().date()
+        last_game_date = None
+        
+        for event in sched_data.get('events', []):
+            game_time_str = event['date']
+            # ESPN liefert ISO-Zeitstempel: "2026-07-12T21:00:00Z"
+            game_date = datetime.datetime.strptime(game_time_str, "%Y-%m-%dT%H:%M:%SZ").date()
+            
+            # Das aktuellste Spiel VOR heute finden
+            if game_date < today_date:
+                if last_game_date is None or game_date > last_game_date:
+                    last_game_date = game_date
+                    
+        # 4. Tage Differenz berechnen
+        if last_game_date:
+            rest_days = (today_date - last_game_date).days
+            return min(rest_days, 5) # Slider maximal bis 5 Tage einstellen
+            
+        return 2
+    except Exception:
+        return 2 # Fallback bei Serverproblemen
 
 @st.cache_data
 def lade_wnba_daten():
@@ -125,18 +172,26 @@ c1, c2 = st.columns(2)
 wnba_home = c1.selectbox("Heimteam", teams_list, index=0)
 wnba_away = c2.selectbox("Auswärtsteam", teams_list, index=1 if len(teams_list)>1 else 0)
 
-# News laden und Scanner anwerfen (trennt jetzt Out & DTD)
+# Daten im Hintergrund laden
 news_home_data = hole_live_news(wnba_home)
 news_away_data = hole_live_news(wnba_away)
 
 auto_home_out, auto_home_dtd = auto_detect_injuries(news_home_data, wnba_player_values)
 auto_away_out, auto_away_dtd = auto_detect_injuries(news_away_data, wnba_player_values)
 
-st.write("#### ✈️ Schedule & Fatigue")
-col_a, col_b = st.columns(2)
-rest_home = col_a.slider("Pause Heimteam (Tage)", 0, 5, 2)
-rest_away = col_b.slider("Pause Auswärtsteam (Tage)", 0, 5, 2)
+auto_rest_home = hole_rest_days(wnba_home)
+auto_rest_away = hole_rest_days(wnba_away)
 
+# --- SCHEDULE UI ---
+st.write("#### ✈️ Schedule & Fatigue (ESPN Auto-Sync)")
+st.caption("Das System prüft den offiziellen Kalender (Pause bis *heute*). Für Wetten auf morgige Spiele den Regler einfach +1 anpassen.")
+
+col_a, col_b = st.columns(2)
+# Der Slider übernimmt automatisch den berechneten API-Wert!
+rest_home = col_a.slider("Pause Heimteam (Tage)", 0, 5, auto_rest_home)
+rest_away = col_b.slider("Pause Auswärtsteam (Tage)", 0, 5, auto_rest_away)
+
+# --- VERLETZUNGEN UI ---
 st.write("#### 🚑 Verletzungs-Scanner (Auto-Fill)")
 st.caption("Das System unterscheidet zwischen 'Sicher Out' (voller Malus) und 'Day-to-Day' (halber Malus).")
 
@@ -151,7 +206,6 @@ with inj_col2:
     away_out = st.multiselect("Sicher Out (100% Malus)", list(wnba_player_values.keys()), default=auto_away_out, key="a_out")
     away_dtd = st.multiselect("Day-to-Day (50% Malus)", list(wnba_player_values.keys()), default=auto_away_dtd, key="a_dtd")
 
-# Malus berechnen: Out = 100%, DTD = 50%
 inj_home = sum([wnba_player_values[s] for s in home_out]) + sum([wnba_player_values[s] * 0.5 for s in home_dtd])
 inj_away = sum([wnba_player_values[s] for s in away_out]) + sum([wnba_player_values[s] * 0.5 for s in away_dtd])
 
