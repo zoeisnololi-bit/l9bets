@@ -113,32 +113,63 @@ def hole_team_context(team_name):
 def lade_wnba_daten():
     if not os.path.exists('wnba_stats.csv'): return "FEHLT", None
     try:
-        df = pd.read_csv('wnba_stats.csv', encoding='utf-8')
+        # 1. Smarter CSV-Reader (Erkennt Kommas und Semikolons automatisch)
+        try:
+            df = pd.read_csv('wnba_stats.csv', encoding='utf-8', sep=None, engine='python')
+        except:
+            df = pd.read_csv('wnba_stats.csv', encoding='latin1', sep=';')
+            
+        # 2. Überschriften finden (falls die erste Zeile Leerzeichen etc. enthält)
         if 'Team' not in df.columns and 'TEAM' not in [str(c).upper() for c in df.columns]:
             for i in range(5):
                 row_vals = [str(x).strip().upper() for x in df.iloc[i].values]
-                if 'TEAM' in row_vals and 'PTS' in row_vals:
+                if any('TEAM' in val for val in row_vals) and any('PTS' in val for val in row_vals):
                     df.columns = df.iloc[i] 
                     df = df[i+1:].reset_index(drop=True)
                     break
                     
         df.columns = [str(c).strip().upper() for c in df.columns]
+        
+        # Spalten identifizieren
         team_col = next((c for c in df.columns if c in ['TEAM', 'TEAM_NAME', 'NAME']), None)
         pts_col = next((c for c in df.columns if c in ['PTS', 'POINTS']), None)
+        games_col = next((c for c in df.columns if c in ['G', 'GP', 'GAMES']), None)
         opp_col = next((c for c in df.columns if c in ['OPP_PTS', 'OPP_POINTS']), None)
         pace_col = next((c for c in df.columns if c in ['PACE', 'SPEED']), None)
             
-        if not team_col or not pts_col: return None, None
+        if not team_col or not pts_col: 
+            return None, None
+
         df[pts_col] = pd.to_numeric(df[pts_col], errors='coerce')
-        if not opp_col: df['OPP_PTS'] = df[pts_col].mean()
-        else: opp_col = 'OPP_PTS'
-        if not pace_col: df['PACE'] = 80.0
-        else: pace_col = 'PACE'
+        
+        # 3. KORREKTUR: Gesamtpunkte in Punkte pro Spiel umrechnen
+        if df[pts_col].mean() > 200 and games_col:
+            df[games_col] = pd.to_numeric(df[games_col], errors='coerce')
+            df[pts_col] = df[pts_col] / df[games_col]
+
+        # Fehlende Defensiv-Daten auffüllen (Durchschnitt)
+        if not opp_col:
+            df['OPP_PTS'] = df[pts_col].mean()
+            opp_col = 'OPP_PTS'
+        else:
+            df[opp_col] = pd.to_numeric(df[opp_col], errors='coerce')
+            if df[opp_col].mean() > 200 and games_col:
+                df[opp_col] = df[opp_col] / df[games_col]
+
+        # Fehlende Pace auffüllen
+        if not pace_col:
+            df['PACE'] = 80.0
+            pace_col = 'PACE'
             
-        clean_df = df[[team_col, pts_col, opp_col, pace_col]].copy().dropna()
+        # 4. Daten bereinigen (Leere Zeilen und "League Average" entfernen)
+        df = df.dropna(subset=[team_col, pts_col])
+        df = df[~df[team_col].astype(str).str.contains('Average|League', case=False, na=False)]
+            
+        clean_df = df[[team_col, pts_col, opp_col, pace_col]].copy()
         clean_df.columns = ['Team', 'PTS', 'OPP_PTS', 'PACE']
         return "OK", clean_df
-    except: 
+    except Exception as e: 
+        st.error(f"Debug-Info für Entwickler: {e}")
         return "ERROR", None
 
 def berechne_hca(team_name):
