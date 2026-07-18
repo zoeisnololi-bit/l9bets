@@ -51,6 +51,7 @@ def auto_detect_injuries(news_list, player_dict):
     return out_list, dtd_list
 
 # WICHTIG: Cache vorerst entfernt, damit Fehler nicht gespeichert werden!
+# WICHTIG: Cache vorerst entfernt, damit Fehler nicht gespeichert werden!
 def hole_team_context(team_name):
     try:
         # 1. Team ID abrufen
@@ -91,7 +92,10 @@ def hole_team_context(team_name):
             # Spiele ohne Datum ignorieren
             if 'date' not in event: continue 
             
-            game_date = datetime.datetime.strptime(event['date'], "%Y-%m-%dT%H:%M:%SZ").date()
+            # KORREKTUR: Wir schneiden nur die ersten 10 Zeichen aus (YYYY-MM-DD) und ignorieren die Uhrzeit
+            date_str = event['date'][:10]
+            game_date = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
+            
             if game_date < today_date:
                 if last_game_date is None or game_date > last_game_date:
                     last_game_date = game_date
@@ -100,7 +104,7 @@ def hole_team_context(team_name):
                 if len(competitors) == 2:
                     t_score = o_score = 0
                     for c in competitors:
-                        # SUPER-ROBUST: Punktzahlen parsen (egal welches Format ESPN heute nutzt)
+                        # SUPER-ROBUST: Punktzahlen parsen
                         score_val = 0
                         if 'score' in c:
                             if isinstance(c['score'], dict):
@@ -134,7 +138,6 @@ def hole_team_context(team_name):
         return rest_days, avg_recent_pts, avg_recent_opp
         
     except Exception as e:
-        # Hier wird der genaue Fehler in die App gedruckt!
         st.error(f"❌ System-Fehler bei der Formkurve von {team_name}: {str(e)}")
         return 2, None, None
 
