@@ -50,63 +50,92 @@ def auto_detect_injuries(news_list, player_dict):
                         dtd_list.append(key)
     return out_list, dtd_list
 
-@st.cache_data(ttl=3600*12) 
+# WICHTIG: Cache vorerst entfernt, damit Fehler nicht gespeichert werden!
 def hole_team_context(team_name):
-    """Zieht Ruhetage UND die Formkurve (letzte 5 Spiele) von ESPN"""
     try:
+        # 1. Team ID abrufen
         url_teams = "https://site.api.espn.com/apis/site/v2/sports/basketball/wnba/teams"
         req = urllib.request.Request(url_teams, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=4) as response:
+        with urllib.request.urlopen(req, timeout=5) as response:
             data = json.loads(response.read())
             
         team_id = None
+        clean_name = str(team_name).lower().strip()
+        
+        # Abgleich, ob der CSV-Teamname bei ESPN existiert
         for element in data.get('sports', [])[0].get('leagues', [])[0].get('teams', []):
             t = element['team']
-            if team_name.lower() in t['displayName'].lower() or team_name.lower() in t['name'].lower():
+            name_espn = t.get('name', '').lower()
+            display_espn = t.get('displayName', '').lower()
+            
+            if clean_name in display_espn or clean_name in name_espn or display_espn in clean_name:
                 team_id = t['id']
                 break
                 
-        if not team_id: return 2, None, None
+        if not team_id:
+            st.warning(f"📡 API-Info: Team '{team_name}' konnte in der Live-Datenbank nicht gefunden werden.")
+            return 2, None, None
             
+        # 2. Spielplan (Schedule) abrufen
         url_sched = f"https://site.api.espn.com/apis/site/v2/sports/basketball/wnba/teams/{team_id}/schedule"
         req_sched = urllib.request.Request(url_sched, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req_sched, timeout=4) as response:
+        with urllib.request.urlopen(req_sched, timeout=5) as response:
             sched_data = json.loads(response.read())
             
         today_date = datetime.datetime.utcnow().date()
         last_game_date = None
         recent_pts, recent_opp = [], []
         
-        # Spiele durchgehen und sortieren
         events = sched_data.get('events', [])
         for event in reversed(events): # Von neu nach alt
+            # Spiele ohne Datum ignorieren
+            if 'date' not in event: continue 
+            
             game_date = datetime.datetime.strptime(event['date'], "%Y-%m-%dT%H:%M:%SZ").date()
             if game_date < today_date:
                 if last_game_date is None or game_date > last_game_date:
                     last_game_date = game_date
                 
-                # Scores extrahieren für die Formkurve
                 competitors = event.get('competitions', [{}])[0].get('competitors', [])
                 if len(competitors) == 2:
                     t_score = o_score = 0
                     for c in competitors:
-                        val = float(c.get('score', {}).get('value', 0))
-                        if c.get('id') == team_id: t_score = val
-                        else: o_score = val
+                        # SUPER-ROBUST: Punktzahlen parsen (egal welches Format ESPN heute nutzt)
+                        score_val = 0
+                        if 'score' in c:
+                            if isinstance(c['score'], dict):
+                                score_val = float(c['score'].get('value', 0))
+                            else:
+                                try:
+                                    score_val = float(c['score'])
+                                except ValueError:
+                                    pass
+                        
+                        if str(c.get('id')) == str(team_id): 
+                            t_score = score_val
+                        else: 
+                            o_score = score_val
+                            
                     if t_score > 0 and o_score > 0:
                         recent_pts.append(t_score)
                         recent_opp.append(o_score)
                         
-                if len(recent_pts) >= 5: # Nur die letzten 5 Spiele
+                if len(recent_pts) >= 5: 
                     break
                     
+        if not recent_pts:
+            st.warning(f"📡 API-Info: Keine vergangenen Spiele (Punkte) für '{team_name}' gefunden.")
+            return 2, None, None
+
         rest_days = min((today_date - last_game_date).days, 5) if last_game_date else 2
-        
-        avg_recent_pts = sum(recent_pts) / len(recent_pts) if recent_pts else None
-        avg_recent_opp = sum(recent_opp) / len(recent_opp) if recent_opp else None
+        avg_recent_pts = sum(recent_pts) / len(recent_pts)
+        avg_recent_opp = sum(recent_opp) / len(recent_opp)
         
         return rest_days, avg_recent_pts, avg_recent_opp
-    except Exception:
+        
+    except Exception as e:
+        # Hier wird der genaue Fehler in die App gedruckt!
+        st.error(f"❌ System-Fehler bei der Formkurve von {team_name}: {str(e)}")
         return 2, None, None
 
 @st.cache_data
@@ -185,7 +214,6 @@ def berechne_hca(team_name):
 
 def get_win_probability(edge, std_dev):
     """Berechnet die faire Wahrscheinlichkeit basierend auf Normalverteilung (Gauß)"""
-    # math.erf ist die Error-Function zur Berechnung der kumulativen Verteilungsfunktion
     return 0.5 * (1.0 + math.erf(edge / (std_dev * math.sqrt(2.0)))) * 100.0
 
 # --- DATEN-CHECK ---
